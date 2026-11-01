@@ -142,15 +142,16 @@ blocks of 256 stars instead of nested loops.
 
 ## Release
 
-- [ ] Tag `v0.4.2`. The Release workflow builds the DMG and the Debian package
+- [x] Tag `v0.4.2`. The Release workflow builds the DMG and the Debian package
       and attaches them to a **draft** release.
-- [ ] At the telescope, before publishing: the Activity log names the
+- [ ] At the telescope: the Activity log names the
       coordinate system the Seestar reports on connect, and a GoTo on a known
       star lands it at the centre of the frame — in EQ mode as well as alt-az.
-- [ ] Download both installers from the draft, then publish it.
-- [ ] Update the download names, sizes, date and release-tag links in
+- [x] Download both installers from the draft, then publish it — published
+      2026-11-01.
+- [x] Update the download names, sizes, date and release-tag links in
       `README.md`, `docsrc/install.md` and the public site
       (`docs/install.html`, `docs/index.html`). They point at the 0.4.1
       artefacts until then on purpose: those are the files that exist, and
       the sizes can only be read from the published ones.
-- [ ] Merge into `main`, which redeploys the site and the documentation.
+- [x] Merge into `main`, which redeploys the site and the documentation.

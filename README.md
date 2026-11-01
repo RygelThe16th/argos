@@ -12,11 +12,11 @@ pretending that a live curve is a final scientific result. ARGOS keeps the raw
 data intact. Calibration, registration and final photometry remain a separate,
 auditable reduction workflow in Siril and `star_var_script`.
 
-> **0.4.1 is a field-validation release.** Use it with the telescope attended,
+> **0.4.2 is a field-validation release.** Use it with the telescope attended,
 > retain every raw FITS frame, and independently review or reduce the data
 > before drawing a scientific conclusion.
 
-## What ARGOS 0.4.1 does
+## What ARGOS 0.4.2 does
 
 - Connects to Seestar equipment through Alpaca, with discovery, pointing,
   framing, focusing controls and sequence capture.
@@ -40,24 +40,24 @@ Read the documentation before the first session:
 - [Install and release notes](https://perretjules.com/argos/install.html)
 - [First observing session](notes/guide_terrain_0_4_1_fr.md)
 - [Identify a solved field](docsrc/field_identification.md)
-- [What changed in 0.4.1](notes/release_0_4_1.md)
+- [What changed in 0.4.2](notes/release_0_4_2.md)
 
 ## Supported scope and roadmap
 
-The **Seestar S30 Pro** is the 0.4.1 reference profile. S30 and S50 profiles
+The **Seestar S30 Pro** is the 0.4.2 reference profile. S30 and S50 profiles
 can be selected for connection, framing and exploratory work, but their
 camera-specific assumptions still need field validation before they are used
 for precision claims.
 
 ARGOS is being extended to the full Seestar range. **DwarfLab support is
-planned for the next ARGOS version**; it is not part of 0.4.1.
+planned for the next ARGOS version**; it is not part of 0.4.2.
 
 ## Install
 
 Release packages are attached to the
-[ARGOS 0.4.1 release](https://github.com/jperret21/argos/releases/tag/v0.4.1):
+[ARGOS 0.4.2 release](https://github.com/jperret21/argos/releases/tag/v0.4.2):
 
-- **macOS / Apple silicon:** download `Argos-0.4.1-macOS-arm64.dmg`, copy
+- **macOS / Apple silicon:** download `Argos-0.4.2-macOS-arm64.dmg`, copy
   ARGOS to Applications and open it locally. The application is not signed
   with an Apple Developer certificate; use **Control-click → Open** for the
   first launch. If macOS reports that it is damaged, remove the quarantine
@@ -67,11 +67,11 @@ Release packages are attached to the
   xattr -dr com.apple.quarantine /Applications/Argos.app
   ```
 
-- **Debian-family Linux / x86-64:** download `argos_0.4.1_amd64.deb` and
+- **Debian-family Linux / x86-64:** download `argos_0.4.2_amd64.deb` and
   install it with:
 
   ```bash
-  sudo apt install ./argos_0.4.1_amd64.deb
+  sudo apt install ./argos_0.4.2_amd64.deb
   ```
 
   The Debian package is a technical preview. Validate it on the actual field
@@ -120,7 +120,7 @@ to do so.
 
 GitHub Actions runs formatting, linting, tests and documentation checks on pull
 requests and on pushes to `main` or `release/**`. A version tag such as
-`v0.4.1` builds the macOS DMG and Debian package, then creates a GitHub release
+`v0.4.2` builds the macOS DMG and Debian package, then creates a GitHub release
 draft with both assets. Publishing that draft remains a deliberate human step.
 
 For local checks:

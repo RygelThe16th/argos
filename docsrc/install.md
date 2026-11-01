@@ -15,29 +15,29 @@ not for observers.
 ## 1. Install ARGOS
 
 Downloads are on the [releases
-page](https://github.com/jperret21/argos/releases/tag/v0.4.1).
+page](https://github.com/jperret21/argos/releases/tag/v0.4.2).
 
 `````{grid} 1 1 3 3
 :gutter: 2
 
 ````{grid-item-card} macOS
-`Argos-0.4.1-macOS-arm64.dmg` — 67 MB, Apple silicon.
+`Argos-0.4.2-macOS-arm64.dmg` — 67 MB, Apple silicon.
 
 Open the `.dmg`, drag ARGOS to Applications.
 ````
 
 ````{grid-item-card} Debian
-`argos_0.4.1_amd64.deb` — 82 MB, x86-64.
+`argos_0.4.2_amd64.deb` — 82 MB, x86-64.
 
 ```bash
-sudo apt install ./argos_0.4.1_amd64.deb
+sudo apt install ./argos_0.4.2_amd64.deb
 ```
 
 A technical preview: never field-validated on Linux.
 ````
 
 ````{grid-item-card} Source
-Tag `v0.4.1`.
+Tag `v0.4.2`.
 
 ```bash
 uv sync --extra dev
