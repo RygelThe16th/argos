@@ -177,8 +177,10 @@ GET /api/v1/telescope/0/<property>?ClientID=42&ClientTransactionID=<n>
 | `slewing` | bool | Slew in progress |
 | `atpark` | bool | At park position |
 | `athome` | bool | At home position |
-| `rightascension` | float | Current RA (decimal hours, J2000) |
-| `declination` | float | Current Dec (decimal degrees, J2000) |
+| `rightascension` | float | Current RA (decimal hours, in `equatorialsystem`) |
+| `declination` | float | Current Dec (decimal degrees, in `equatorialsystem`) |
+| `equatorialsystem` | int | Coordinate system of every RA/Dec exchanged: 0 other, 1 topocentric of date, 2 J2000, 3 J2050, 4 B1950 (ASCOM `EquatorialCoordinateType`) |
+| `utcdate` | string | Mount clock, ISO-8601 UTC |
 | `altitude` | float | Altitude (degrees) |
 | `azimuth` | float | Azimuth (degrees) |
 | `siderealtime` | float | Local sidereal time (hours) |
@@ -198,10 +200,20 @@ Body: ClientID=42&ClientTransactionID=<n>&<params>
 | `connected` | `Connected=true` | Connect to telescope |
 | `unpark` | — | Deploy arm → ScopeMoveToHorizon event |
 | `park` | — | Park mount (closes arm) |
-| `slewtocoordinatesasync` | `RightAscension=<hours>&Declination=<degrees>` | Async slew to target |
-| `synctocoordinates` | `RightAscension=<hours>&Declination=<degrees>` | Sync pointing model |
+| `utcdate` | `UTCDate=<ISO-8601>` | Set the mount clock |
+| `slewtocoordinatesasync` | `RightAscension=<hours>&Declination=<degrees>` | Async slew to target, in `equatorialsystem` |
+| `synctocoordinates` | `RightAscension=<hours>&Declination=<degrees>` | Sync pointing model, in `equatorialsystem` |
 | `abortslew` | — | Abort active slew |
 | `tracking` | `Tracking=true` | Enable sidereal tracking |
+
+Everything else in ARGOS — catalogues, ASTAP, FITS, Stellarium — is ICRS/J2000.
+Since 0.4.2 the conversion happens at the telescope wrapper only: on connect
+ARGOS reads `equatorialsystem`, then converts outgoing GoTo and Sync coordinates
+into it and incoming positions back to J2000. For topocentric of date that is
+the apparent place with right ascension from the true equinox of date (astropy
+`TETE`), at the mount's site when the firmware exposes `sitelatitude` and
+`sitelongitude`. ARGOS also writes `utcdate` and reads it back; when the mount
+clock is still more than 60 s off, GoTo and Sync are refused.
 
 ### Alpaca error codes
 
@@ -419,10 +431,10 @@ event here.
 The user may need to use the native Seestar app for the first initialization in a session.
 After that, `park` / `unpark` via Alpaca work correctly.
 
-## 12. Safety thresholds — proposed, NOT implemented in 0.4.1
+## 12. Safety thresholds — proposed, NOT implemented in 0.4.2
 
 ```{danger}
-**None of the following exists in ARGOS 0.4.1.** This table is a design note
+**None of the following exists in ARGOS 0.4.2.** This table is a design note
 that was previously presented as behaviour. Do not rely on any of it.
 
 Verified against the source: the string `battery` appears **nowhere** in

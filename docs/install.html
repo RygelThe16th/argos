@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Install ARGOS 0.4.1</title>
-  <meta name="description" content="Install ARGOS 0.4.1: macOS arm64 .dmg and Debian x86-64 .deb, how to link ASTAP, and what to do in the Seestar app first.">
-  <meta property="og:title" content="Install ARGOS 0.4.1">
-  <meta property="og:description" content="macOS arm64 .dmg and Debian x86-64 .deb, built and smoke-tested on the v0.4.1 tag. Free software, GPL v3.">
+  <title>Install ARGOS 0.4.2</title>
+  <meta name="description" content="Install ARGOS 0.4.2: macOS arm64 .dmg and Debian x86-64 .deb, how to link ASTAP, and what to do in the Seestar app first.">
+  <meta property="og:title" content="Install ARGOS 0.4.2">
+  <meta property="og:description" content="macOS arm64 .dmg and Debian x86-64 .deb, built and smoke-tested on the v0.4.2 tag. Free software, GPL v3.">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
   <link rel="stylesheet" href="css/argos.css">
@@ -32,9 +32,9 @@
   <main>
     <section class="page-hero">
       <div>
-        <p class="mono-label">Version 0.4.1 · 8 September 2026</p>
+        <p class="mono-label">Version 0.4.2 · 1 November 2026</p>
         <h1>Install.</h1>
-        <p>Built and smoke-tested on the <code>v0.4.1</code> tag, on the platform each package targets. Free software under the GNU GPL v3.</p>
+        <p>Built and smoke-tested on the <code>v0.4.2</code> tag, on the platform each package targets. Free software under the GNU GPL v3.</p>
       </div>
       <aside class="release-note">
         <b>First launch on macOS</b>
@@ -45,25 +45,25 @@
 
     <section class="download-section band">
       <p class="mono-label">01 · Installers</p>
-      <h2>Get ARGOS 0.4.1.</h2>
+      <h2>Get ARGOS 0.4.2.</h2>
       <div class="download-table">
         <div class="download-row">
           <span class="platform">macOS</span>
-          <strong>Argos-0.4.1-macOS-arm64.dmg</strong>
+          <strong>Argos-0.4.2-macOS-arm64.dmg</strong>
           <p>67.4 MB · Apple silicon · unsigned</p>
-          <a href="https://github.com/jperret21/argos/releases/download/v0.4.1/Argos-0.4.1-macOS-arm64.dmg">Download .dmg ↓</a>
+          <a href="https://github.com/jperret21/argos/releases/download/v0.4.2/Argos-0.4.2-macOS-arm64.dmg">Download .dmg ↓</a>
         </div>
         <div class="download-row">
           <span class="platform">Debian</span>
-          <strong>argos_0.4.1_amd64.deb</strong>
-          <p>82.3 MB · x86-64 · technical preview, never field-validated on Linux</p>
-          <a href="https://github.com/jperret21/argos/releases/download/v0.4.1/argos_0.4.1_amd64.deb">Download .deb ↓</a>
+          <strong>argos_0.4.2_amd64.deb</strong>
+          <p>82.4 MB · x86-64 · technical preview, never field-validated on Linux</p>
+          <a href="https://github.com/jperret21/argos/releases/download/v0.4.2/argos_0.4.2_amd64.deb">Download .deb ↓</a>
         </div>
         <div class="download-row">
           <span class="platform">Source</span>
-          <strong>Tag v0.4.1</strong>
+          <strong>Tag v0.4.2</strong>
           <p>Python 3.11 · <code>uv sync --extra dev</code> · <code>uv run python main.py</code></p>
-          <a href="https://github.com/jperret21/argos/tree/v0.4.1" target="_blank" rel="noopener">Source ↗</a>
+          <a href="https://github.com/jperret21/argos/tree/v0.4.2" target="_blank" rel="noopener">Source ↗</a>
         </div>
       </div>
     </section>
@@ -80,7 +80,7 @@
         <li>
           <span>02</span>
           <strong>Install ARGOS</strong>
-          <p>macOS: open the <code>.dmg</code>, drag ARGOS to Applications, then control-click it and choose Open — the build is unsigned. Debian: <code>sudo apt install ./argos_0.4.1_amd64.deb</code>.</p>
+          <p>macOS: open the <code>.dmg</code>, drag ARGOS to Applications, then control-click it and choose Open — the build is unsigned. Debian: <code>sudo apt install ./argos_0.4.2_amd64.deb</code>.</p>
         </li>
         <li>
           <span>03</span>
@@ -107,18 +107,20 @@
 
     <section class="release-notes">
       <p class="mono-label">04 · Release notes</p>
-      <h2>What changed in 0.4.1.</h2>
+      <h2>What changed in 0.4.2.</h2>
       <ul>
-        <li><strong><code>FOCRATIO</code> corrected.</strong> Every FITS written before 0.4.1 carries f/3.2 instead of the S30 Pro's f/5.3. <code>APTDIA</code> is now written too — check any frame you already hold.</li>
-        <li><strong>Telescope profiles replace hard-coded optics.</strong> A driver mismatch now warns at connect.</li>
-        <li><strong>Field identification.</strong> Gaia DR3, AAVSO VSX, SIMBAD, NASA Exoplanet Archive hosts and AAVSO VSP, with a per-field query budget and local caches.</li>
-        <li><strong>Photometry roles persist.</strong> Target, comparison and check selections are stored with the session, not just drawn as overlays.</li>
-        <li><strong>Review works offline.</strong> Quality trends, curves, FITS headers and the source frame behind any point, with no telescope connected.</li>
-        <li><strong>Startup: 26.1 s removed.</strong> A quarantine sweep ran over 6 754 files on every launch, of which 0 were ever quarantined.</li>
+        <li><strong>Re-run batch photometry from 0.4.1.</strong> With <code>camera.egain_table</code> empty — the default — the offline path used a gain of 1.0: every SNR and formal error was wrong by the gain, 1.723 e⁻/ADU on an IMX585 at gain 80.</li>
+        <li><strong>No more silently lost points.</strong> A frame whose comparisons were all flagged suspect lost a valid magnitude; it is kept now. <code>comps_used</code> counts the magnitude ensemble, and <code>suspect</code> is a column.</li>
+        <li><strong>Airmass at the point's own time</strong>, from the target's coordinates, not from the mount's last reported altitude.</li>
+        <li><strong>GoTo in the mount's own coordinates.</strong> J2000 targets are converted to the system the driver declares — at the equator, about 21′ of precession. GoTo and Sync are refused while the mount clock is more than a minute off.</li>
+        <li><strong>AAVSO export.</strong> <code>CHART</code> names the VSP chart; <code>KNAME</code> and <code>KMAG</code> carry the check star.</li>
+        <li><strong>EQ mode: apertures follow by translation only</strong>, so centroid noise no longer rotates them about the sensor. Live only — the offline re-measurement cannot tell the mount mode.</li>
+        <li><strong>Observe stays responsive</strong> when catalogues, plate solves and tracking update at once.</li>
       </ul>
       <p class="release-scope"><b>Before you observe</b>
       The live curve is a quick-look: uncalibrated, no dark, flat or bias. Keep the raw FITS; the publishable measurement comes from Siril. Attended use only — there is no weather safety and no restart recovery.</p>
       <div class="actions">
+        <a class="action" href="https://github.com/jperret21/argos/blob/v0.4.2/notes/release_0_4_2.md" target="_blank" rel="noopener">Full 0.4.2 notes <span>↗</span></a>
         <a class="action" href="https://github.com/jperret21/argos/releases" target="_blank" rel="noopener">All releases <span>↗</span></a>
         <a class="action" href="docs/">Documentation</a>
       </div>

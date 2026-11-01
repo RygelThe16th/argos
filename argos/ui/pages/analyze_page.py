@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import logging
+from pathlib import Path
 
 from PyQt6.QtCore import QByteArray, Qt, pyqtSlot
 from PyQt6.QtGui import QAction, QShowEvent
@@ -35,6 +36,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from argos.core.catalog.targets import TargetSet
 from argos.core.config import Config
 from argos.core.photometry.lightcurve import read_curves_csv
 from argos.core.session.review import SessionReviewError, load_session, load_session_curves
@@ -749,6 +751,13 @@ class AnalyzeScreen(QWidget):
             obscode=self._obscode() or "XXX",
             filt=self._band(),
         )
+        # A session CSV sits in its run folder or the photometry/ subfolder,
+        # beside the run's targets.json (whose comparisons name the AAVSO CHART).
+        csv_dir = Path(path).parent
+        for folder in (csv_dir, csv_dir.parent):
+            if (folder / "targets.json").exists():
+                window.set_targets(TargetSet.load(folder / "targets.json").stars)
+                break
         window.show()
         window.raise_()
         self._windows.append(window)

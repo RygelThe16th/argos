@@ -45,7 +45,7 @@ import time
 from pathlib import Path
 
 import numpy as np
-from PyQt6.QtCore import QByteArray, Qt, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QByteArray, QTimer, Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QDockWidget,
@@ -77,6 +77,8 @@ from argos.core.catalog.offline import essential_catalogue_objects
 from argos.core.catalog.photometry import separation_arcmin
 from argos.core.catalog.object_resolver import is_variable_object_type
 from argos.core.catalog.targets import TargetStar
+from argos.core.hardware import active as hardware
+from argos.core.imaging import sensor_models
 from argos.core.imaging.astrometry_session import field_geometry, project_points
 from argos.core.imaging.debayer import VIEW_SUPERPIXEL
 from argos.core.imaging.metrics import (
@@ -201,6 +203,13 @@ class ImagingPage(QWidget):
         self._nearby_object_resolver_worker: NearbyObjectResolverWorker | None = None
         self._point_identity_worker: PointIdentityWorker | None = None
         self._point_identity_request: tuple[float, float, object | None] | None = None
+        # Catalogue delivery and live aperture tracking can complete together.
+        # Coalesce their overlay work so a large catalogue never monopolises a
+        # Qt signal delivery turn (which makes the whole window show the busy
+        # cursor, even though the camera/network workers are separate).
+        self._catalog_project_timer = QTimer(self)
+        self._catalog_project_timer.setSingleShot(True)
+        self._catalog_project_timer.timeout.connect(self._project_catalog)
 
         self._build_ui()
         # The engine reads capture parameters through these providers — the
@@ -534,7 +543,7 @@ class ImagingPage(QWidget):
         e.photometry_point.connect(self._on_photometry_point)
         e.curves_changed.connect(self._render_curves)  # dock + window, one store
         e.comparison_quality_updated.connect(self._on_comparison_quality_updated)
-        e.apertures_tracked.connect(self._project_catalog)  # markers follow the frame
+        e.apertures_tracked.connect(self._schedule_catalog_project)  # markers follow the frame
         # Live plate-solve controller (engine-owned, shared pipeline).
         self._astrometry.solved.connect(self._on_astrometry_solved)
 
@@ -766,7 +775,7 @@ class ImagingPage(QWidget):
         if self._astrometry.wcs is not None:
             # The detected-source set is frame-specific, so use it immediately
             # to distinguish a validated marker from an empty-sky coordinate.
-            self._project_catalog()
+            self._schedule_catalog_project()
         if self._photometry_window is not None and self._photometry_window.isVisible():
             self._sync_photometry_setup()
 
@@ -840,6 +849,7 @@ class ImagingPage(QWidget):
                     name=c.auid,
                     source="vsp",
                     mags={b.band: b.mag for b in c.bands},
+                    chart_id=c.chart_id,
                 ),
             )
             return
@@ -1107,7 +1117,7 @@ class ImagingPage(QWidget):
             self._point_identities.append(identity)
         else:
             identity = existing
-        self._project_catalog()
+        self._schedule_catalog_project()
         try:
             index = self._point_identities.index(identity)
             green_pos = self._point_identity_green[index]
@@ -1389,7 +1399,7 @@ class ImagingPage(QWidget):
         self._histogram_dock.set_astrometry_checked(self._overlay_bar.is_checked("grid"))
         self._remeasure_selection()  # refresh the clicked star's RA/Dec
         self._engine.maybe_fetch_catalog()  # VSX/VSP once per field
-        self._project_catalog()  # re-project cached catalog + targets onto the new WCS
+        self._schedule_catalog_project()  # re-project cached catalog + targets onto the new WCS
         self._engine.measure_photometry_if_idle()  # sequences measure per saved sub
 
     # ------------------------------------------------------------------
@@ -1418,7 +1428,7 @@ class ImagingPage(QWidget):
         """Open the per-field catalogue controls at their point of use."""
         dialog = AstrometrySettingsDialog(self._config, self, section=SECTION_CATALOG)
         dialog.saved.connect(self._engine.refetch_catalog)
-        dialog.saved.connect(self._project_catalog)
+        dialog.saved.connect(self._schedule_catalog_project)
         dialog.saved.connect(self._sync_catalogue_depth)
         dialog.exec()
 
@@ -1432,7 +1442,7 @@ class ImagingPage(QWidget):
     def _on_catalogue_magnitude_changed(self, value: float) -> None:
         """Apply the faint limit immediately from already cached field data."""
         self._display_mag_limit = float(value)
-        self._project_catalog()
+        self._schedule_catalog_project()
 
     @pyqtSlot(float)
     def _save_catalogue_magnitude(self, value: float) -> None:
@@ -1450,21 +1460,38 @@ class ImagingPage(QWidget):
     @pyqtSlot(object)
     def _on_catalog_ready(self, _result) -> None:
         """The engine fetched a fresh VSX/VSP catalog — project it onto the WCS."""
-        self._project_catalog()
+        self._schedule_catalog_project()
         self._refresh_variable_table()
+
+    @pyqtSlot()
+    def _schedule_catalog_project(self) -> None:
+        """Coalesce expensive overlay redraws without blocking user input."""
+        # A very short delay gives Qt a chance to repaint and process a click
+        # after a solve/tracker result.  Restarting the timer folds a burst of
+        # catalogue, solve and photometry signals into one redraw.
+        self._catalog_project_timer.start(75)
+
+    def _overlay_wcs(self):
+        """WCS appropriate for catalogue *display*, not aperture measurement.
+
+        The live tracker is rotation+translation in alt-az and deliberately
+        translation-only in EQ.  In both cases it keeps an already solved
+        field aligned with the latest image while avoiding a false EQ rotation.
+        """
+        return self._engine.tracked_wcs()
 
     def _project_catalog(self) -> None:
         """Re-project the engine's cached variables/comparisons/targets onto the WCS.
 
-        Uses the engine's *tracked* WCS: during a sequence the live tracker
-        follows field rotation/drift between solves, so the markers stay on
-        the stars instead of freezing at the solve position.
+        In alt-az mode the live tracker follows field rotation/drift between
+        solves.  In EQ it follows measured translation only, preserving the
+        alignment of markers on a gently drifting live frame.
         """
         variables = self._engine.variables
         field_stars = self._engine.field_stars
         named_objects = self._engine.named_objects
         comparisons = self._engine.comparisons
-        wcs, gs = self._engine.tracked_wcs(), self._green_shape
+        wcs, gs = self._overlay_wcs(), self._green_shape
         raw_var_green = project_points(wcs, gs, ((v.ra_deg, v.dec_deg) for v in variables))
         # The VSX table and its overlay share this projection exactly. A local
         # detector is not used as an arbitrary visibility gate: faint, valid
@@ -1491,23 +1518,10 @@ class ImagingPage(QWidget):
         match_key = (id(field_stars), id(named_objects), len(field_stars), len(named_objects))
         if match_key != self._field_catalogue_match_key:
             self._field_catalogue_match_key = match_key
-            self._matched_named_indices = set()
-            self._field_catalogue_names = []
-            for star in field_stars:
-                candidates = [
-                    (
-                        separation_arcmin(star.ra_deg, star.dec_deg, item.ra_deg, item.dec_deg),
-                        index,
-                        item,
-                    )
-                    for index, item in enumerate(self._named_objects)
-                ]
-                match = min(candidates, default=None)
-                if match is not None and match[0] <= 3.0 / 60.0:
-                    self._matched_named_indices.add(match[1])
-                    self._field_catalogue_names.append(match[2])
-                else:
-                    self._field_catalogue_names.append(None)
+            (
+                self._matched_named_indices,
+                self._field_catalogue_names,
+            ) = self._match_field_catalogue_names(field_stars, self._named_objects)
         raw_field_catalogue_green = project_points(
             wcs, gs, ((star.ra_deg, star.dec_deg) for star in field_stars)
         )
@@ -1727,7 +1741,7 @@ class ImagingPage(QWidget):
 
     def _project_targets(self) -> None:
         tset = self._engine.target_set()
-        wcs, gs = self._engine.tracked_wcs(), self._green_shape
+        wcs, gs = self._overlay_wcs(), self._green_shape
         self._target_green = project_points(wcs, gs, ((s.ra_deg, s.dec_deg) for s in tset.stars))
         pts = []
         for p, s in zip(self._target_green, tset.stars):
@@ -1763,11 +1777,49 @@ class ImagingPage(QWidget):
     def _on_variable_visible_rows_changed(self, source_indices) -> None:
         """Keep the VSX overlay identical to the filtered Variables table."""
         self._visible_variable_indices = {int(index) for index in source_indices}
-        self._project_catalog()
+        self._schedule_catalog_project()
 
     def _magnitude_is_visible(self, magnitude: float | None) -> bool:
         """Apply the observer's Gaia G limit to stellar Gaia markers only."""
         return magnitude is None or float(magnitude) <= self._display_mag_limit
+
+    @staticmethod
+    def _match_field_catalogue_names(field_stars, named_objects) -> tuple[set[int], list]:
+        """Match Gaia stars to SIMBAD identities within 3 arcsec.
+
+        This used to calculate every separation in nested Python loops on the
+        GUI thread.  The same great-circle nearest-neighbour operation is done
+        in small NumPy blocks instead, keeping even dense fields responsive.
+        """
+        names = [None] * len(field_stars)
+        if not field_stars or not named_objects:
+            return set(), names
+
+        named_ra = np.deg2rad(np.asarray([item.ra_deg for item in named_objects]))
+        named_dec = np.deg2rad(np.asarray([item.dec_deg for item in named_objects]))
+        named_sin_dec = np.sin(named_dec)
+        named_cos_dec = np.cos(named_dec)
+        # 3 arcsec, expressed as a cosine to avoid an arccos per candidate.
+        min_cosine = math.cos(math.radians(3.0 / 3600.0))
+        matched: set[int] = set()
+
+        # Bound temporary arrays when a catalogue request has thousands of
+        # Gaia stars, while retaining vectorised work for each block.
+        block_size = 256
+        for start in range(0, len(field_stars), block_size):
+            stars = field_stars[start : start + block_size]
+            ra = np.deg2rad(np.asarray([star.ra_deg for star in stars]))
+            dec = np.deg2rad(np.asarray([star.dec_deg for star in stars]))
+            cosines = np.sin(dec)[:, None] * named_sin_dec[None, :] + np.cos(dec)[
+                :, None
+            ] * named_cos_dec[None, :] * np.cos(ra[:, None] - named_ra[None, :])
+            nearest = np.argmax(cosines, axis=1)
+            for offset, index in enumerate(nearest):
+                if cosines[offset, index] >= min_cosine:
+                    item_index = int(index)
+                    matched.add(item_index)
+                    names[start + offset] = named_objects[item_index]
+        return matched, names
 
     @staticmethod
     def _deduplicate_marker_points(points, radius_px: float = 8.0) -> list:
@@ -2266,15 +2318,21 @@ class ImagingPage(QWidget):
         worker.start()
 
     def _engine_egain(self) -> float:
-        """e-/ADU from the config table (batch has no live driver handle)."""
+        """e-/ADU for an offline batch: config table, then the sensor reference.
+
+        Mirrors ``AcquisitionEngine._egain`` minus the driver step, which needs
+        a live handle. Falling back to 1.0 here — as this used to — silently
+        treated ADU as electrons and made every batch SNR and formal error
+        wrong, without any warning.
+        """
+        gain = self._camera_dock.params().gain
         table = self._cfg("camera.egain_table", {}) or {}
-        gain = str(self._camera_dock.params().gain)
-        if isinstance(table, dict) and gain in table:
+        if isinstance(table, dict) and str(gain) in table:
             try:
-                return float(table[gain])
+                return float(table[str(gain)])
             except (TypeError, ValueError):
                 pass
-        return 1.0
+        return sensor_models.lookup_egain(hardware.profile().sensor, gain)
 
     @pyqtSlot(object)
     def _on_batch_done(self, result) -> None:

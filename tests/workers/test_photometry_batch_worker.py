@@ -133,7 +133,8 @@ def test_batch_measures_and_writes_uncertainty_aware_csv(_scene) -> None:
     header = csvs[0].read_text().splitlines()[0]
     assert header == (
         "jd_utc,bjd_tdb,mag,mag_err,formal_mag_err,sigma_syst,airmass,fwhm,sky_adu,"
-        "comps_used,relative_flux,relative_flux_err,saturated"
+        "comps_used,relative_flux,relative_flux_err,relative_comps_used,"
+        "saturated,suspect"
     )
     reloaded = LightCurve.from_csv(csvs[0])
     assert len(reloaded.points) == 3
@@ -422,3 +423,85 @@ def test_batch_aperture_sized_from_measured_fwhm(tmp_path) -> None:
     # Every frame reports the same frozen FWHM.
     frame_fwhms = {d.get("fwhm") for d in docs if d["kind"] == "frame"}
     assert frame_fwhms == {ap_event["fwhm"]}
+
+
+# --------------------------------------------------------------------------- #
+# Regressions from the 0.4.1 documentation review
+# --------------------------------------------------------------------------- #
+
+
+def _res(mag, ratio, *, diff_comps=0, rel_comps=0, suspect=False):
+    """A minimal stand-in for one TargetResult, as _emit_points consumes it."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        star=SimpleNamespace(
+            auid="000-AAA-001",
+            display_name="XX Cyg",
+            role=ROLE_TARGET,
+            ra_deg=300.0,
+            dec_deg=40.0,
+        ),
+        diff=(
+            None
+            if mag is None
+            else SimpleNamespace(mag=mag, mag_err=0.02, formal_mag_err=0.02, comps_used=diff_comps)
+        ),
+        relative=(
+            None
+            if ratio is None
+            else SimpleNamespace(flux_ratio=ratio, flux_ratio_err=0.001, comps_used=rel_comps)
+        ),
+        phot=SimpleNamespace(sky_adu=200.0, saturated=False, suspect=suspect),
+    )
+
+
+def _worker_for_emit(_scene):
+    req, _ = _scene
+    return PhotometryBatchWorker(req)
+
+
+def test_batch_keeps_a_magnitude_with_no_flux_ratio(_scene) -> None:
+    """The ratio path rejects suspect comparisons; the magnitude path does not.
+
+    A frame where every comparison was flagged suspect used to lose its
+    differential magnitude entirely — no row, no warning.
+    """
+    worker = _worker_for_emit(_scene)
+    curves: dict = {}
+    worker._emit_points([_res(mag=10.5, ratio=None, diff_comps=3)], 2451545.0, curves)
+
+    assert len(curves) == 1
+    point = next(iter(curves.values())).points[0]
+    assert point.mag == 10.5
+    assert point.relative_flux is None
+    assert point.comps_used == 3
+
+
+def test_batch_comps_used_counts_the_magnitude_ensemble(_scene) -> None:
+    """The two ensembles are filtered differently and must be reported apart."""
+    worker = _worker_for_emit(_scene)
+    curves: dict = {}
+    worker._emit_points([_res(mag=10.5, ratio=0.42, diff_comps=4, rel_comps=2)], 2451545.0, curves)
+
+    point = next(iter(curves.values())).points[0]
+    assert point.comps_used == 4  # behind `mag`
+    assert point.relative_comps_used == 2  # behind `relative_flux`
+
+
+def test_batch_records_the_suspect_flag(_scene) -> None:
+    """Recorded, never acted on — the observer decides."""
+    worker = _worker_for_emit(_scene)
+    curves: dict = {}
+    worker._emit_points([_res(mag=10.5, ratio=0.42, suspect=True)], 2451545.0, curves)
+
+    point = next(iter(curves.values())).points[0]
+    assert point.suspect is True
+    assert point.mag == 10.5  # kept, not dropped
+
+
+def test_batch_drops_only_a_result_with_neither_product(_scene) -> None:
+    worker = _worker_for_emit(_scene)
+    curves: dict = {}
+    worker._emit_points([_res(mag=None, ratio=None)], 2451545.0, curves)
+    assert curves == {}

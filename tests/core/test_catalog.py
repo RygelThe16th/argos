@@ -222,6 +222,15 @@ def test_vsp_parses_comparison_stars() -> None:
     assert stars[1].mag("V") == 11.401
 
 
+def test_vsp_stars_carry_the_chart_id() -> None:
+    # The AAVSO asks for this chart ID in the CHART field of a report.
+    stars = vsp_chart(83.82, -5.39, 40.0, session=_FakeSession(_VSP_JSON))
+    assert {c.chart_id for c in stars} == {"X42585ESI"}
+    no_chart = {"photometry": _VSP_JSON["photometry"]}
+    stars = vsp_chart(10.0, 20.0, 40.0, session=_FakeSession(no_chart))
+    assert {c.chart_id for c in stars} == {None}
+
+
 def test_vsp_can_request_a_sequence_by_target_name() -> None:
     session = _FakeSession(_VSP_JSON)
     stars = vsp_chart(300.5, 58.75, 240.0, target_name="XX Cyg", session=session)

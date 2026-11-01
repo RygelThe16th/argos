@@ -42,7 +42,9 @@ class SequencerPage(QWidget):
             design.SPACING_XL, design.SPACING_LG, design.SPACING_XL, design.SPACING_LG
         )
         outer.setSpacing(design.SPACING_MD)
-        outer.addWidget(design.HeadingLabel("Sequencer"))
+        # The sidebar calls this screen "Plan"; the heading must agree, or the
+        # observer cannot tell whether they are in the right place.
+        outer.addWidget(design.HeadingLabel("Plan"))
         self.panel = SequencePanel()
         self.panel.set_config(config)
         outer.addWidget(self.panel, 1)

@@ -14,15 +14,39 @@ def airmass_from_altitude(alt_deg: float | None) -> float | None:
     """Airmass for a target at altitude ``alt_deg``.
 
     One formula project-wide (P4): delegates to Pickering 2002
-    (``sky_geometry.compute_airmass`` — what the FITS ``AIRMASS`` header
-    uses), so a frame's header and its light-curve point can never disagree.
-    Returns ``None`` at or below the horizon.
+    (``sky_geometry.compute_airmass`` — the same function the FITS ``AIRMASS``
+    header uses. Same formula, but not necessarily the same *input*: the header
+    is evaluated at the exposure start from the mount's altitude, so prefer
+    :func:`airmass_at` for a light-curve point.) Returns ``None`` at or below
+    the horizon.
     """
     if alt_deg is None:
         return None
     from argos.core.imaging.sky_geometry import compute_airmass
 
     return compute_airmass(float(alt_deg))
+
+
+def airmass_at(
+    jd_utc: float,
+    ra_deg: float,
+    dec_deg: float,
+    lat_deg: float,
+    lon_deg: float,
+) -> float | None:
+    """Airmass of a *target* at ``jd_utc``, from its own coordinates.
+
+    The mount's last reported altitude is sampled at an arbitrary instant and
+    describes where the tube points, not where the star is at the exposure
+    midpoint. For a light-curve point — which is timed at the midpoint — derive
+    the altitude from the target's own position instead.
+
+    Returns ``None`` at or below the horizon.
+    """
+    from argos.core.imaging.sky_geometry import altitude_at
+
+    alt = altitude_at(jd_utc, ra_deg / 15.0, dec_deg, lat_deg, lon_deg)
+    return airmass_from_altitude(alt)
 
 
 def julian_date(dt: datetime) -> float:

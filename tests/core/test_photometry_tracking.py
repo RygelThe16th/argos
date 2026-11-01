@@ -16,6 +16,7 @@ from argos.core.photometry.tracking import (
     RigidTransform,
     TrackedWCS,
     fit_rigid,
+    fit_translation,
     refine_centroid,
 )
 
@@ -78,6 +79,16 @@ def test_fit_rigid_single_pair_is_translation_only() -> None:
     assert abs(t.tx - 2.0) < 1e-9 and abs(t.ty + 1.0) < 1e-9
 
 
+def test_fit_translation_preserves_eq_drift_without_rotation() -> None:
+    src = [(20.0, 20.0), (80.0, 25.0), (50.0, 85.0)]
+    dst = [(x + 3.0, y - 2.0) for x, y in src]
+
+    t = fit_translation(src, dst, 50.0, 50.0)
+
+    assert t.rotation_deg == 0.0
+    assert abs(t.tx - 3.0) < 1e-9 and abs(t.ty + 2.0) < 1e-9
+
+
 # ── ApertureTracker over a rotating field ───────────────────────────────────
 
 _ANCHORS = [(30.0, 30.0), (90.0, 35.0), (60.0, 95.0)]
@@ -125,6 +136,13 @@ def test_identity_transform_is_a_no_op() -> None:
     assert t.rotation_deg == 0.0 and t.shift_px == 0.0
 
 
+def test_rigid_transform_inverse_round_trips() -> None:
+    t = RigidTransform(theta_rad=math.radians(4.0), tx=3.0, ty=-2.0, cx=60.0, cy=60.0)
+    x, y = t.apply(95.0, 90.0)
+    rx, ry = t.invert(x, y)
+    assert abs(rx - 95.0) < 1e-9 and abs(ry - 90.0) < 1e-9
+
+
 class _FakeRefWCS:
     """Maps (ra_deg, dec_deg) → a preset green-px (x, y)."""
 
@@ -133,6 +151,12 @@ class _FakeRefWCS:
 
     def world_to_pixel_deg(self, ra_deg, dec_deg):
         return self._m[(ra_deg, dec_deg)]
+
+    def pixel_to_radec(self, x, y):
+        for radec, pixel in self._m.items():
+            if abs(x - pixel[0]) < 1e-8 and abs(y - pixel[1]) < 1e-8:
+                return radec
+        raise KeyError((x, y))
 
 
 def test_project_points_through_tracked_wcs_follows_the_field() -> None:
@@ -152,6 +176,17 @@ def test_project_points_through_tracked_wcs_follows_the_field() -> None:
         ex, ey = _rotate(rx, ry, *_CENTER, ang)
         assert g is not None
         assert abs(g[0] - ex) < 0.3 and abs(g[1] - ey) < 0.3
+
+
+def test_tracked_wcs_inverse_uses_reference_coordinates() -> None:
+    tracker = ApertureTracker(_ANCHORS, _CENTER, search_r=6.0)
+    assert tracker.update(_green_with_stars([(x + 3.0, y - 2.0) for x, y in _ANCHORS])) == 3
+    ref = _FakeRefWCS({(1.0, 1.0): (95.0, 90.0)})
+    wcs = TrackedWCS(ref, tracker)
+
+    current_x, current_y = wcs.world_to_pixel_deg(1.0, 1.0)
+
+    assert wcs.pixel_to_radec(current_x, current_y) == (1.0, 1.0)
 
 
 def test_tracker_rejects_a_bad_anchor() -> None:

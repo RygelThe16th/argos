@@ -7,6 +7,7 @@ Integration tests: require the ASCOM Alpaca Simulator on localhost:32323.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -29,6 +30,7 @@ def mock_scope() -> MagicMock:
     scope.Connected = False
     scope.UTCDate = MagicMock()
     scope.CanSlewAsync = True
+    scope.EquatorialSystem = 2  # ASCOM equJ2000
     scope.Name = "Mock Telescope"
     scope.AtPark = False
     scope.CanPark = True
@@ -38,6 +40,9 @@ def mock_scope() -> MagicMock:
     scope.Declination = -5.3911
     scope.Altitude = 42.5
     scope.Azimuth = 178.3
+    scope.SiteLatitude = 48.85
+    scope.SiteLongitude = 2.35
+    scope.SiteElevation = 35.0
     return scope
 
 
@@ -78,6 +83,28 @@ class TestConnection:
     def test_connect_syncs_utc(self, telescope, mock_scope):
         telescope.connect()
         assert mock_scope.UTCDate is not None
+
+    def test_connect_reads_driver_coordinate_system(self, telescope, mock_scope):
+        mock_scope.EquatorialSystem = 1  # ASCOM equTopocentric
+        telescope.connect()
+        assert telescope.equatorial_system == "topocentric-of-date"
+
+    def test_connect_measures_clock_after_sync(self, telescope, mock_scope):
+        telescope.connect()
+        assert telescope.clock_error_seconds is not None
+        assert telescope.clock_error_seconds < 1.0
+
+    def test_connect_detects_clock_that_ignores_utcdate_write(self, telescope, mock_scope):
+        stale_clock = datetime.now(timezone.utc) - timedelta(hours=9)
+        type(mock_scope).UTCDate = property(
+            fget=lambda _scope: stale_clock,
+            fset=lambda _scope, _value: None,
+        )
+
+        telescope.connect()
+
+        assert telescope.clock_error_seconds is not None
+        assert telescope.clock_error_seconds > 8 * 3600
 
     def test_disconnect_sets_connected_false(self, connected_telescope, mock_scope):
         connected_telescope.disconnect()
@@ -222,6 +249,78 @@ class TestCommands:
     def test_stop_axis_calls_move_axis_zero(self, connected_telescope, mock_scope):
         connected_telescope.stop_axis(1)
         mock_scope.MoveAxis.assert_called_once()
+
+    def test_j2000_slew_keeps_catalogue_coordinates(self, connected_telescope, mock_scope):
+        connected_telescope._equatorial_system = 2
+        connected_telescope.slew_to(19.425, 42.792)
+        mock_scope.SlewToCoordinatesAsync.assert_called_once_with(19.425, 42.792)
+
+    def test_topocentric_slew_converts_catalogue_coordinates(self, connected_telescope, mock_scope):
+        """ASCOM's usual topocentric system must not receive raw J2000."""
+        connected_telescope._equatorial_system = 1
+        connected_telescope._site = (48.85, 2.35, 35.0)
+
+        connected_telescope.slew_to(19.425, 42.792)  # RR Lyrae, ICRS/J2000
+
+        sent_ra, sent_dec = mock_scope.SlewToCoordinatesAsync.call_args.args
+        assert abs(sent_ra - 19.425) > 0.0001
+        assert abs(sent_dec - 42.792) > 0.0001
+        assert mock_scope.TargetRightAscension == sent_ra
+        assert mock_scope.TargetDeclination == sent_dec
+
+    def test_topocentric_ra_is_counted_from_the_equinox_of_date(
+        self, connected_telescope, mock_scope
+    ):
+        """At the equator the RA sent must carry the precession since J2000."""
+        connected_telescope._equatorial_system = 1
+        connected_telescope._site = (48.85, 2.35, 35.0)
+
+        connected_telescope.slew_to(6.0, 0.0)
+
+        sent_ra, _ = mock_scope.SlewToCoordinatesAsync.call_args.args
+        j2000 = datetime(2000, 1, 1, 12, tzinfo=timezone.utc)
+        years = (datetime.now(timezone.utc) - j2000).days / 365.25
+        # General precession in RA is 3.075 s/yr at the equator; nutation and
+        # annual aberration add at most ~2.5 s.  A CIO-based (CIRS) RA stays
+        # within a second of the J2000 value and fails this.
+        assert (sent_ra - 6.0) * 3600.0 == pytest.approx(3.075 * years, abs=3.0)
+
+    def test_topocentric_round_trip_returns_the_catalogue_position(
+        self, connected_telescope, mock_scope
+    ):
+        connected_telescope._equatorial_system = 1
+        connected_telescope._site = (48.85, 2.35, 35.0)
+
+        connected_telescope.slew_to(19.425, 42.792)
+        sent_ra, sent_dec = mock_scope.SlewToCoordinatesAsync.call_args.args
+        mock_scope.RightAscension = sent_ra
+        mock_scope.Declination = sent_dec
+
+        pos = connected_telescope.get_position()
+
+        assert pos.ra == pytest.approx(19.425, abs=1e-5)
+        assert pos.dec == pytest.approx(42.792, abs=1e-5)
+
+    def test_topocentric_position_is_returned_as_j2000(self, connected_telescope, mock_scope):
+        """Polling remains in Argos's documented ICRS/J2000 contract."""
+        connected_telescope._equatorial_system = 1
+        connected_telescope._site = (48.85, 2.35, 35.0)
+        mock_scope.RightAscension = 19.4165
+        mock_scope.Declination = 42.8497
+
+        pos = connected_telescope.get_position()
+
+        assert abs(pos.ra - mock_scope.RightAscension) > 0.0001
+        assert abs(pos.dec - mock_scope.Declination) > 0.0001
+
+    def test_slew_is_refused_when_mount_clock_is_stale(self, connected_telescope, mock_scope):
+        connected_telescope._clock_error_seconds = 9 * 3600
+
+        with pytest.raises(AlpacaError, match="Correct the Seestar date/time"):
+            connected_telescope.slew_to(19.425, 42.792)
+
+        assert mock_scope.Tracking is False
+        mock_scope.SlewToCoordinatesAsync.assert_not_called()
 
 
 # ===========================================================================

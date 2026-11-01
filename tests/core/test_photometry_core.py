@@ -147,10 +147,12 @@ def test_lightcurve_csv_round_trip(tmp_path) -> None:
     path = tmp_path / "sub" / "photometry.csv"
     lc.to_csv(path)
     rows = list(csv.reader(path.open()))
-    assert rows[0][0] == "jd_utc" and rows[0][-1] == "saturated"
+    assert rows[0][0] == "jd_utc" and rows[0][-1] == "suspect"
     assert "bjd_tdb" in rows[0]
+    assert "suspect" in rows[0]  # the PSF-support flag reaches the export
     assert len(rows) == 3  # header + 2 points
-    assert rows[2][-1] == "1"  # saturated flag serialised as 1
+    sat = rows[0].index("saturated")
+    assert rows[2][sat] == "1"  # saturated flag serialised as 1
 
 
 def test_lightcurve_from_csv_round_trips(tmp_path) -> None:
@@ -237,6 +239,43 @@ def test_aavso_export_ignores_comparison_diagnostics(tmp_path) -> None:
     assert data[0].startswith("NU ORI,")
 
 
+def test_aavso_export_names_the_check_star_and_the_vsp_chart(tmp_path) -> None:
+    from argos.core.photometry.lightcurve import write_aavso
+
+    target = LightCurve(auid="000-BCK-301", name="XX Cyg", role="target")
+    check = LightCurve(auid="000-BJV-171", name="106", role="check")
+    for jd, mag in ((2451545.0, 11.0), (2451545.01, 11.1), (2451545.02, 11.2)):
+        target.append(LcPoint(jd_utc=jd, mag=mag, mag_err=0.02))
+    check.append(LcPoint(jd_utc=2451545.0, mag=10.61, mag_err=0.01))
+    check.append(LcPoint(jd_utc=2451545.01, mag=float("nan"), mag_err=float("nan")))
+    path = tmp_path / "aavso.txt"
+    write_aavso(path, [target, check], obscode="ABC", filt="TG", chart="X42585ESI")
+
+    rows = [ln.split(",") for ln in path.read_text().splitlines() if not ln.startswith("#")]
+    assert len(rows) == 3  # the check curve is never written as an observation
+    assert all(len(r) == 15 for r in rows)
+    kname, kmag, chart = 9, 10, 13
+    assert (rows[0][kname], rows[0][kmag], rows[0][chart]) == (
+        "000-BJV-171",
+        "10.6100",
+        "X42585ESI",
+    )
+    # No usable check measurement on that frame → both check fields "na".
+    assert (rows[1][kname], rows[1][kmag]) == ("na", "na")
+    assert (rows[2][kname], rows[2][kmag]) == ("na", "na")
+
+
+def test_aavso_export_without_check_or_chart_keeps_na(tmp_path) -> None:
+    from argos.core.photometry.lightcurve import write_aavso
+
+    target = LightCurve(name="NU Ori", role="target")
+    target.append(LcPoint(jd_utc=2451545.0, mag=9.0, mag_err=0.02))
+    path = tmp_path / "aavso.txt"
+    write_aavso(path, [target], obscode="ABC", chart="a,b")  # a comma cannot be a field
+    row = [ln for ln in path.read_text().splitlines() if not ln.startswith("#")][0].split(",")
+    assert (row[9], row[10], row[13]) == ("na", "na", "na")
+
+
 def test_bjd_tdb_close_to_jd() -> None:
     # BJD−JD is at most ~8.3 min (0.0058 d); just check the correction is sane.
     bjd = bjd_tdb(2451545.0, ra_deg=83.6, dec_deg=22.0, lat_deg=43.6, lon_deg=1.4, elev_m=150.0)
@@ -289,3 +328,79 @@ def test_faint_signal_is_not_accused() -> None:
     g = _noisy_sky()  # nothing but sky noise — peak is not significant
     phot = measure_aperture(g, 30.0, 30.0, r_ap=5, r_in=8, r_out=12)
     assert phot is not None and phot.suspect is False
+
+
+# --------------------------------------------------------------------------- #
+# Regressions from the 0.4.1 documentation review
+# --------------------------------------------------------------------------- #
+
+
+def test_airmass_at_uses_the_target_altitude_not_the_mount() -> None:
+    """A light-curve point must be timed and *placed* at the exposure midpoint.
+
+    The mount's last reported altitude is sampled at an arbitrary instant; the
+    target's airmass has to come from its own coordinates at the point's JD.
+    """
+    from argos.core.imaging.sky_geometry import altitude_at, compute_airmass
+    from argos.core.photometry.airmass import airmass_at
+
+    jd, ra_deg, dec_deg, lat, lon = 2460000.5, 300.0, 40.0, 37.4, -122.1
+    alt = altitude_at(jd, ra_deg / 15.0, dec_deg, lat, lon)
+    assert airmass_at(jd, ra_deg, dec_deg, lat, lon) == compute_airmass(alt)
+
+    # Six hours later the same star is somewhere else entirely.
+    later = airmass_at(jd + 0.25, ra_deg, dec_deg, lat, lon)
+    assert later != airmass_at(jd, ra_deg, dec_deg, lat, lon)
+
+
+def test_airmass_at_is_none_below_the_horizon() -> None:
+    from argos.core.photometry.airmass import airmass_at
+
+    # Deep southern target seen from the northern hemisphere: never rises.
+    assert airmass_at(2460000.5, 100.0, -80.0, 50.0, 0.0) is None
+
+
+def test_csv_carries_the_suspect_flag_and_both_ensemble_counts(tmp_path) -> None:
+    """``suspect`` used to be measured, plotted and then dropped on export.
+
+    ``comps_used`` counts the ensemble behind ``mag``; the flux-ratio path
+    filters differently, so its own count is exported beside it rather than in
+    its place.
+    """
+    lc = LightCurve(auid="000-BBB-002", name="XX Cyg")
+    lc.append(
+        LcPoint(
+            jd_utc=2451545.0,
+            mag=9.0,
+            mag_err=0.02,
+            comps_used=4,
+            relative_comps_used=2,
+            suspect=True,
+        )
+    )
+    path = tmp_path / "photometry.csv"
+    lc.to_csv(path)
+
+    header, row = list(csv.reader(path.open()))
+    assert row[header.index("suspect")] == "1"
+    assert row[header.index("comps_used")] == "4"
+    assert row[header.index("relative_comps_used")] == "2"
+
+    point = LightCurve.from_csv(path).points[0]
+    assert point.suspect is True
+    assert (point.comps_used, point.relative_comps_used) == (4, 2)
+
+
+def test_offline_aperture_is_wider_than_the_floor_without_a_fwhm() -> None:
+    """Pins the behaviour the docstrings used to describe incorrectly.
+
+    With no measured FWHM the aperture is ``2.5 * DEFAULT_FWHM`` = 7.5 green px,
+    not the 4 px floor — a measurement that is not directly comparable with one
+    taken from a frame that had a FWHM.
+    """
+    from argos.core.photometry.params import DEFAULT_FWHM, PhotometryParams
+
+    params = PhotometryParams.from_config(lambda key, default=None: default)
+    assert params.aperture_px(None) == params.aperture_fwhm_mult * DEFAULT_FWHM
+    assert params.aperture_px(None) > params.aperture_min_px
+    assert params.aperture_px(1.0) == params.aperture_min_px

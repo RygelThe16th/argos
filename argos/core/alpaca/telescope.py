@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Literal
 
 from alpaca.telescope import Telescope as _AlpacaTelescope
 from alpaca.exceptions import DriverException
@@ -27,6 +28,22 @@ from alpaca.exceptions import DriverException
 from argos.core.alpaca.client import AlpacaError
 
 logger = logging.getLogger(__name__)
+
+
+# ASCOM ``EquatorialCoordinateType`` values.  Keep these numeric rather than
+# retaining the alpyca enum: a few drivers return a plain integer over Alpaca.
+_EQU_OTHER = 0
+_EQU_TOPOCENTRIC = 1
+_EQU_J2000 = 2
+_EQU_J2050 = 3
+_EQU_B1950 = 4
+_EQUATORIAL_SYSTEM_NAMES = {
+    _EQU_OTHER: "other/unknown",
+    _EQU_TOPOCENTRIC: "topocentric-of-date",
+    _EQU_J2000: "J2000",
+    _EQU_J2050: "J2050",
+    _EQU_B1950: "B1950",
+}
 
 
 def _wrap(exc: Exception) -> AlpacaError:
@@ -74,7 +91,7 @@ class Telescope:
 
     Args:
         host: IP address of the Seestar.
-        port: Alpaca HTTP port (discovered via UDP, typically 4700).
+        port: Alpaca HTTP port (discovered via UDP, 32323 on the Seestar).
     """
 
     def __init__(self, host: str, port: int) -> None:
@@ -82,6 +99,15 @@ class Telescope:
         self._connected = False
         self._can_slew_async = True
         self._alignment_mode: str | None = None
+        # All Argos/catalogue coordinates are ICRS/J2000.  This property says
+        # what coordinate system the *driver* expects for both GoTo and Sync.
+        # It is unrelated to AlignmentMode (Alt-Az vs EQ mechanics).
+        self._equatorial_system: int | None = None
+        self._site: tuple[float, float, float] | None = None
+        # A mount can acknowledge UTCDate writes without actually changing its
+        # clock.  In EQ mode that turns every otherwise-valid GoTo into a large
+        # hour-angle error, so keep a read-back measurement for command safety.
+        self._clock_error_seconds: float | None = None
 
     # ------------------------------------------------------------------
     # Connection
@@ -105,21 +131,36 @@ class Telescope:
 
         self._connected = True
 
-        # Sync clock — fixes GoTo failures on firmware < 3.0.2
-        # Follow NINA's pattern: try reading first; some mounts require a write before the first read.
+        # Sync and *verify* the clock.  Some Seestar driver versions acknowledge
+        # UTCDate writes but retain a stale local clock; an EQ GoTo would then
+        # be aimed many hours away even with correct RA/Dec.
         try:
             utc_now = datetime.now(timezone.utc)
-            utc_str = utc_now.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
             try:
-                mount_utc = self._scope.UTCDate
-                diff = abs((mount_utc - utc_now.replace(tzinfo=None)).total_seconds())
-                logger.info("Mount UTC: %s  System UTC: %s  diff=%.1fs", mount_utc, utc_now, diff)
-                if diff > 10:
-                    logger.warning("Mount clock is %.1f seconds off — syncing", diff)
+                before = self._scope.UTCDate
+                logger.info("Mount UTC before sync: %s", before)
             except Exception:
                 logger.debug("UTCDate read failed — writing first (some firmware requires this)")
-            self._scope.UTCDate = utc_str
-            logger.info("UTC date synced: %s", utc_str)
+            # Pass an aware datetime, which alpyca serialises as ISO-8601.  It
+            # is less ambiguous than hand-assembling a string for drivers with
+            # fragile date parsers.
+            self._scope.UTCDate = utc_now
+            mount_utc = self._scope.UTCDate
+            if mount_utc.tzinfo is None:
+                mount_utc = mount_utc.replace(tzinfo=timezone.utc)
+            self._clock_error_seconds = abs((mount_utc - utc_now).total_seconds())
+            if self._clock_error_seconds > 60.0:
+                logger.error(
+                    "Mount UTC remains %.0fs off after sync (mount=%s system=%s); "
+                    "GoTo and Sync will be refused",
+                    self._clock_error_seconds,
+                    mount_utc,
+                    utc_now,
+                )
+            else:
+                logger.info(
+                    "Mount UTC verified: %s (diff=%.1fs)", mount_utc, self._clock_error_seconds
+                )
         except Exception as exc:
             logger.warning("UTC date sync failed (non-fatal): %s", exc)
 
@@ -129,6 +170,50 @@ class Telescope:
                 logger.warning("Mount reports CanSlewAsync=False — will poll Slewing property")
         except Exception:
             self._can_slew_async = True
+
+        # ASCOM requires SlewToCoordinates[Async] parameters to be expressed
+        # in EquatorialSystem.  Most mounts report equTopocentric, whereas the
+        # catalogue, ASTAP and Stellarium interfaces used by Argos are J2000.
+        # Reading this is therefore essential to a correct GoTo, independently
+        # of the mount's physical AlignmentMode.
+        try:
+            value = int(self._scope.EquatorialSystem)
+            if value in _EQUATORIAL_SYSTEM_NAMES:
+                self._equatorial_system = value
+                logger.info(
+                    "EquatorialSystem: %s (%s)",
+                    value,
+                    _EQUATORIAL_SYSTEM_NAMES[value],
+                )
+            else:
+                logger.warning("Unknown EquatorialSystem=%s; retaining J2000 coordinates", value)
+        except Exception as exc:
+            logger.warning("EquatorialSystem query failed; retaining J2000 coordinates: %s", exc)
+
+        # A site is only a small correction for stellar targets, but reading it
+        # lets the topocentric conversion match the driver's contract exactly.
+        # It is optional because several Seestar firmware versions do not
+        # expose the Site* properties through Alpaca.
+        if self._equatorial_system == _EQU_TOPOCENTRIC:
+            try:
+                latitude = float(self._scope.SiteLatitude)
+                longitude = float(self._scope.SiteLongitude)
+                if -90.0 <= latitude <= 90.0 and -180.0 <= longitude <= 180.0:
+                    try:
+                        elevation = float(self._scope.SiteElevation)
+                    except Exception:
+                        elevation = 0.0
+                    self._site = (latitude, longitude, elevation)
+                    logger.info(
+                        "Mount site: lat=%.5f lon=%.5f elev=%.0fm",
+                        latitude,
+                        longitude,
+                        elevation,
+                    )
+            except Exception as exc:
+                logger.info(
+                    "Mount site unavailable; using geocentric apparent coordinates: %s", exc
+                )
 
         try:
             from alpaca.telescope import TelescopeAxes
@@ -183,6 +268,108 @@ class Telescope:
         ``"EQ (GEM)"``, or None when the firmware doesn't say."""
         return self._alignment_mode
 
+    @property
+    def equatorial_system(self) -> str | None:
+        """Coordinate system currently required by the mount driver.
+
+        This is deliberately separate from :attr:`alignment_mode`: an EQ
+        mount can still require topocentric-of-date coordinates.
+        """
+        if self._equatorial_system is None:
+            return None
+        return _EQUATORIAL_SYSTEM_NAMES[self._equatorial_system]
+
+    @property
+    def clock_error_seconds(self) -> float | None:
+        """Absolute mount-vs-system UTC offset measured immediately after sync."""
+        return self._clock_error_seconds
+
+    def _assert_clock_synchronized(self) -> None:
+        """Refuse coordinate commands when the mount clock is demonstrably stale."""
+        if self._clock_error_seconds is not None and self._clock_error_seconds > 60.0:
+            raise AlpacaError(
+                0,
+                "Mount UTC is %.1f hours off. Correct the Seestar date/time in its native app, "
+                "then reconnect before using GoTo or Sync." % (self._clock_error_seconds / 3600.0),
+            )
+
+    # ------------------------------------------------------------------
+    # Coordinate-system boundary
+    # ------------------------------------------------------------------
+
+    def _convert_coordinates(
+        self, ra: float, dec: float, direction: Literal["to_mount", "from_mount"]
+    ) -> tuple[float, float]:
+        """Convert between Argos ICRS/J2000 and the driver's coordinates.
+
+        ASCOM's ``equTopocentric`` means apparent coordinates at the current
+        date (precession, nutation and annual aberration included), with right
+        ascension counted from the true equinox of date.  That is astropy's
+        ``TETE`` frame, not ``CIRS``: CIRS counts right ascension from the
+        CIO, which does not follow precession along the equator, so it leaves
+        out the term that dominates.  At the equator that term is about 21
+        arcminutes in 2026 and grows by 0.77 arcminutes a year.
+
+        The transformation is intentionally at this wrapper boundary, so the
+        rest of Argos — catalogue resolution, ASTAP, FITS and Stellarium —
+        continues to exchange its documented J2000 coordinates.
+        """
+        if self._equatorial_system in (None, _EQU_OTHER, _EQU_J2000):
+            return ra, dec
+
+        try:
+            import astropy.units as u
+            from astropy.coordinates import FK4, FK5, TETE, EarthLocation, SkyCoord
+            from astropy.time import Time
+            from astropy.utils import iers
+
+            # Telescope control must remain offline-safe.  Astropy otherwise
+            # attempts an IERS download during a live GoTo and may reject a
+            # perfectly usable bundled table once it ages past 30 days.
+            iers.conf.auto_download = False
+            iers.conf.auto_max_age = None
+
+            if self._equatorial_system == _EQU_TOPOCENTRIC:
+                now = Time(datetime.now(timezone.utc))
+                frame_args = {"obstime": now}
+                if self._site is not None:
+                    latitude, longitude, elevation = self._site
+                    frame_args["location"] = EarthLocation.from_geodetic(
+                        longitude * u.deg, latitude * u.deg, elevation * u.m
+                    )
+                frame = TETE(**frame_args)
+            elif self._equatorial_system == _EQU_J2050:
+                frame = FK5(equinox=Time("J2050"))
+            elif self._equatorial_system == _EQU_B1950:
+                frame = FK4(equinox=Time("B1950"))
+            else:
+                # A future ASCOM value must never silently become a physical
+                # mispoint.  This only runs if a value passed connection-time
+                # validation, but keeps the safety property local to the
+                # conversion boundary.
+                raise ValueError(f"unsupported EquatorialSystem={self._equatorial_system}")
+
+            if direction == "to_mount":
+                coord = SkyCoord(ra=ra * 15.0 * u.deg, dec=dec * u.deg, frame="icrs")
+                converted = coord.transform_to(frame)
+            else:
+                coord = SkyCoord(ra=ra * 15.0 * u.deg, dec=dec * u.deg, frame=frame)
+                converted = coord.icrs
+            return float(converted.ra.hour % 24.0), float(converted.dec.deg)
+        except Exception as exc:
+            raise AlpacaError(
+                0,
+                f"Could not convert {self.equatorial_system} mount coordinates: {exc}",
+            ) from exc
+
+    def _coordinates_for_mount(self, ra: float, dec: float) -> tuple[float, float]:
+        """Return J2000 Argos coordinates in the driver's required system."""
+        return self._convert_coordinates(ra, dec, "to_mount")
+
+    def _coordinates_from_mount(self, ra: float, dec: float) -> tuple[float, float]:
+        """Return driver-reported coordinates as Argos ICRS/J2000."""
+        return self._convert_coordinates(ra, dec, "from_mount")
+
     # ------------------------------------------------------------------
     # Status
     # ------------------------------------------------------------------
@@ -194,9 +381,12 @@ class Telescope:
             AlpacaError: Communication or device error.
         """
         try:
+            mount_ra = float(self._scope.RightAscension)
+            mount_dec = float(self._scope.Declination)
+            ra, dec = self._coordinates_from_mount(mount_ra, mount_dec)
             return MountPosition(
-                ra=float(self._scope.RightAscension),
-                dec=float(self._scope.Declination),
+                ra=ra,
+                dec=dec,
                 altitude=float(self._scope.Altitude),
                 azimuth=float(self._scope.Azimuth),
                 tracking=bool(self._scope.Tracking),
@@ -236,6 +426,7 @@ class Telescope:
         import time
 
         try:
+            self._assert_clock_synchronized()
             if self._scope.AtPark:
                 raise AlpacaError(0, "Mount is parked — unpark before slewing")
 
@@ -243,16 +434,28 @@ class Telescope:
             logger.info("Enabling tracking")
             self._scope.Tracking = True
 
+            mount_ra, mount_dec = self._coordinates_for_mount(ra, dec)
+
             # Set target coordinates — log if unsupported, but continue
             try:
-                self._scope.TargetRightAscension = ra
-                self._scope.TargetDeclination = dec
-                logger.info("Target set: RA=%.6f Dec=%.6f", ra, dec)
+                self._scope.TargetRightAscension = mount_ra
+                self._scope.TargetDeclination = mount_dec
+                logger.info(
+                    "Target set (%s): RA=%.6f Dec=%.6f",
+                    self.equatorial_system or "J2000 assumed",
+                    mount_ra,
+                    mount_dec,
+                )
             except Exception as exc:
                 logger.warning("TargetRA/Dec not writable on this firmware: %s", exc)
 
-            logger.info("SlewToCoordinatesAsync RA=%.6f Dec=%.6f", ra, dec)
-            self._scope.SlewToCoordinatesAsync(ra, dec)
+            logger.info(
+                "SlewToCoordinatesAsync (%s) RA=%.6f Dec=%.6f",
+                self.equatorial_system or "J2000 assumed",
+                mount_ra,
+                mount_dec,
+            )
+            self._scope.SlewToCoordinatesAsync(mount_ra, mount_dec)
 
             # Brief delay then verify slew started
             time.sleep(0.3)
@@ -343,12 +546,16 @@ class Telescope:
             AlpacaError: Tracking not enabled, or sync rejected by mount.
         """
         try:
+            self._assert_clock_synchronized()
             if not self._scope.Tracking:
                 raise AlpacaError(
                     0, "Tracking must be enabled before syncing — enable tracking first"
                 )
-            logger.info("Syncing to RA=%.6f Dec=%.6f", ra, dec)
-            self._scope.SyncToCoordinates(ra, dec)
+            mount_ra, mount_dec = self._coordinates_for_mount(ra, dec)
+            logger.info(
+                "Syncing (%s) to RA=%.6f Dec=%.6f", self.equatorial_system, mount_ra, mount_dec
+            )
+            self._scope.SyncToCoordinates(mount_ra, mount_dec)
         except AlpacaError:
             raise
         except Exception as exc:
@@ -436,9 +643,16 @@ class Telescope:
         the failure on its own).
         """
         try:
-            self._scope.TargetRightAscension = ra
-            self._scope.TargetDeclination = dec
-            logger.debug("Target hint set: RA=%.6f Dec=%.6f", ra, dec)
+            self._assert_clock_synchronized()
+            mount_ra, mount_dec = self._coordinates_for_mount(ra, dec)
+            self._scope.TargetRightAscension = mount_ra
+            self._scope.TargetDeclination = mount_dec
+            logger.debug(
+                "Target hint set (%s): RA=%.6f Dec=%.6f",
+                self.equatorial_system,
+                mount_ra,
+                mount_dec,
+            )
         except Exception as exc:
             raise _wrap(exc) from exc
 

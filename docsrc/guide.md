@@ -1,10 +1,10 @@
 # Using ARGOS — a complete session
 
 This guide covers one full observing session, from the settings you fill in
-indoors to the folder you hand to Siril at the end. It assumes ARGOS 0.4.1 and a
+indoors to the folder you hand to Siril at the end. It assumes ARGOS 0.4.2 and a
 Seestar telescope.
 
-```{admonition} 0.4.1 is a field-validation release
+```{admonition} 0.4.2 is a field-validation release
 :class: warning
 
 Operate the telescope attended: there is no weather safety and no restart
@@ -60,7 +60,7 @@ left. Learn these now and the rest of the guide has somewhere to hang.
 |---|---|
 | **Connection** | A two-minute setup stop: find the Seestar, connect the four devices. |
 | **Observe** | Where the night happens. The image, the camera controls, focus, the mount, the overlays and the live curve are all here, as movable docks. |
-| **Plan** | Build and run the acquisition sequence. Its heading reads *Sequencer*; it is the same screen. |
+| **Plan** | Build and run the acquisition sequence. |
 | **Review** | Post-session, offline. Curves, quality trends, frames, AAVSO export. |
 | **Settings** | Observer, site, paths, telescope profile, catalogues. |
 
@@ -286,6 +286,10 @@ filter is a selector inside **Acquisition**, and in the sequence rows.
   catalogue controls live under the same **Field** menu.
 - In the Telescope panel, command the GoTo only after checking the name, the
   coordinates and the intended target.
+- GoTo and Sync are refused when the mount's clock is more than 60 s from the
+  computer's after ARGOS has set it — some Seestar firmware accepts the time
+  and keeps its old one. The Activity log says by how many hours. Correct the
+  date and time in the Seestar app, then reconnect.
 - The context bar under the image shows the frame name and session progress;
   detailed statistics stay in their own panel.
 
@@ -448,6 +452,14 @@ the time (which is what AAVSO asks for), the band `TG`, `CNAME=ENSEMBLE`, and
 `TRANS=NO` — an explicit declaration that the magnitudes are untransformed. Only
 curves whose role is *target* are written: a comparison or check curve can never
 leave through this door as an observation.
+
+Your check star, if you chose one, goes into `KNAME`/`KMAG`: its AUID and its
+ensemble magnitude on the same frame, which is what the AAVSO asks for with
+ensemble photometry. `CHART` names the VSP chart the comparison stars came
+from, so the AAVSO knows which sequence you used; it stays `na` when the
+ensemble includes a star picked by hand, or stars from two different charts.
+Comparison stars saved before this version carry no chart, so pick them again
+to fill `CHART`.
 
 **What it is not.** Calibrated. There is no dark, no flat, no bias and no colour
 transformation, the zero point is cross-band, and the uncertainties do not

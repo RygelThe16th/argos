@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from argos.core.catalog.targets import (
     ROLE_CHECK,
     ROLE_COMPARISON,
     ROLE_TARGET,
     TargetSet,
     TargetStar,
+    comparison_chart_id,
 )
 
 
@@ -95,6 +98,26 @@ def test_selection_manifest_is_explicit_and_saved(tmp_path) -> None:
     records = [__import__("json").loads(line) for line in history.read_text().splitlines()]
     assert len(records) == 2
     assert all(record["targets"][0]["name"] == "XX Cyg" for record in records)
+
+
+def test_vsp_chart_id_is_saved_and_handed_off(tmp_path) -> None:
+    ts = TargetSet(object_name="XX Cyg")
+    comp = replace(_star(role=ROLE_COMPARISON, auid="000-BJV-170"), chart_id="X42585ESI")
+    ts.set_role(comp)
+    ts.save(tmp_path / "targets.json")
+    assert TargetSet.load(tmp_path / "targets.json").stars[0].chart_id == "X42585ESI"
+    manifest = ts.selection_manifest()
+    assert manifest["comparison_stars"][0]["catalogue_chart_id"] == "X42585ESI"
+
+
+def test_comparison_chart_id_needs_one_chart_for_every_comparison() -> None:
+    c1 = replace(_star(role=ROLE_COMPARISON, auid="C1"), chart_id="X1")
+    c2 = replace(_star(role=ROLE_COMPARISON, auid="C2"), chart_id="X1")
+    target = _star(role=ROLE_TARGET, auid="T")  # no chart: targets do not count
+    assert comparison_chart_id([target, c1, c2]) == "X1"
+    assert comparison_chart_id([c1, replace(c2, chart_id="X2")]) is None  # two charts
+    assert comparison_chart_id([c1, replace(c2, chart_id=None)]) is None  # manual comp
+    assert comparison_chart_id([target]) is None
 
 
 def test_load_missing_returns_empty(tmp_path) -> None:

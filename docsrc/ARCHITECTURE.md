@@ -63,7 +63,7 @@ Three layers, one dependency direction. This is the core architectural invariant
 
 ```{important}
 **The arrows above are not all one-way, and the diagram used to claim they
-were.** Stating it accurately, as of 0.4.1:
+were.** Stating it accurately, as of 0.4.2:
 
 | Rule | Status | Audit |
 |---|---|---|

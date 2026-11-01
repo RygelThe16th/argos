@@ -141,7 +141,7 @@ class Splash(QSplashScreen):
             _WIDTH,
             18,
             Qt.AlignmentFlag.AlignHCenter,
-            "GNU GPL v3 — free software, with no warranty - Devellloped by Jules Perret",
+            "GNU GPL v3 — free software, with no warranty - Developed by Jules Perret",
         )
 
     def _draw_progress(self, painter: QPainter) -> None:

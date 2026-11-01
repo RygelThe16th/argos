@@ -103,6 +103,22 @@ def test_offline_deep_sky_types_map_to_physical_filters() -> None:
     assert ImagingPage._object_category("OC") == "cluster"
 
 
+def test_field_catalogue_simbad_match_is_nearest_and_within_three_arcsec() -> None:
+    stars = [
+        GaiaStar("near", 300.0, 58.0),
+        GaiaStar("far", 301.0, 58.0),
+    ]
+    near = NamedFieldObject("HD near", 300.0 + 1.0 / 3600.0, 58.0, "*")
+    # At +58°, an RA offset is shortened by cos(dec); 7 arcsec in RA is
+    # safely beyond the 3-arcsec great-circle matching radius.
+    far = NamedFieldObject("HD far", 301.0 + 7.0 / 3600.0, 58.0, "*")
+
+    matched, names = ImagingPage._match_field_catalogue_names(stars, [near, far])
+
+    assert matched == {0}
+    assert names == [near, None]
+
+
 def test_photometry_measurement_controls_are_explicit_and_configurable(qapp) -> None:
     win = PhotometryWindow()
     try:
@@ -342,7 +358,7 @@ def test_lightcurve_export_csv(tmp_path, qapp) -> None:
         assert text[0] == (
             "star_id,role,name,auid,jd_utc,bjd_tdb,mag,mag_err,formal_mag_err,"
             "sigma_syst,airmass,fwhm,sky_adu,comps_used,relative_flux,relative_flux_err,"
-            "saturated"
+            "relative_comps_used,saturated,suspect"
         )
         assert ",target,NU Ori," in text[1]
         # The single-curve reader remains backwards compatible.
@@ -429,3 +445,32 @@ def test_variables_tab_lists_and_selects(qapp) -> None:
         win.close()
         win.deleteLater()
         qapp.processEvents()  # flush the deferred delete now (pyqtgraph teardown)
+
+
+def test_aavso_export_names_the_check_star_and_the_vsp_chart(qapp, tmp_path, monkeypatch) -> None:
+    from PyQt6.QtWidgets import QFileDialog
+
+    from argos.core.catalog.targets import TargetStar
+
+    out = tmp_path / "aavso.txt"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(out), ""))
+    win = PhotometryWindow()
+    try:
+        target = LightCurve(auid="000-BCK-301", name="XX Cyg", role="target")
+        target.append(LcPoint(2451545.0, 11.0, 0.02))
+        check = LightCurve(auid="000-BJV-171", name="106", role="check")
+        check.append(LcPoint(2451545.0, 10.61, 0.01))
+        win.load_curves({"T": target, "K": check}, obscode="ABC")
+        comparison = TargetStar(
+            role="comparison", ra_deg=300.7, dec_deg=59.0, auid="000-BJV-170", chart_id="X42"
+        )
+        win.set_targets([comparison])
+        win._export_aavso()
+
+        rows = [ln.split(",") for ln in out.read_text().splitlines() if not ln.startswith("#")]
+        assert len(rows) == 1  # the check star is not an observation of its own
+        assert (rows[0][9], rows[0][10], rows[0][13]) == ("000-BJV-171", "10.6100", "X42")
+    finally:
+        win.close()
+        win.deleteLater()
+        qapp.processEvents()

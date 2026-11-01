@@ -50,7 +50,12 @@ from argos.core.imaging.fits_writer import FITSWriter, FrameContext
 from argos.core.imaging.green import green_plane
 from argos.core.imaging.metrics import measure_star_at
 from argos.core.imaging.platesolve import angular_separation_deg
-from argos.core.photometry.airmass import airmass_from_altitude, bjd_tdb, julian_date
+from argos.core.photometry.airmass import (
+    airmass_at,
+    airmass_from_altitude,
+    bjd_tdb,
+    julian_date,
+)
 from argos.core.photometry.aperture import measure_aperture
 from argos.core.photometry.lightcurve import LcPoint, LightCurve
 from argos.core.photometry.params import DEFAULT_FWHM, PhotometryParams, measure_frame
@@ -1278,7 +1283,12 @@ class AcquisitionEngine(QObject):
             return wcs
         if self._tracker is None:
             self._tracker = self._build_live_tracker(green, wcs, tset, params)
-        self._tracker.update(green)
+        telescope = self._session.telescope
+        # The alt-az tracker needs a rigid rotation + translation.  On an EQ
+        # wedge there is no field rotation, so only retain measured drift;
+        # centroid noise must not rotate a whole overlay about the sensor.
+        allow_rotation = getattr(telescope, "alignment_mode", None) not in {"EQ", "EQ (GEM)"}
+        self._tracker.update(green, allow_rotation=allow_rotation)
         if not self._tracker.anchors_used:
             self.log_message.emit("WARN", "Photometry: no anchor star found — apertures unguided")
         self.apertures_tracked.emit()
@@ -1362,7 +1372,13 @@ class AcquisitionEngine(QObject):
                     comps_used=res.diff.comps_used,
                     note=res.diff.note or None,
                 )
-            if res.relative is None or res.relative.flux_ratio is None:
+            # A point is worth keeping when *either* product exists. Requiring
+            # the flux ratio used to discard perfectly good differential
+            # magnitudes whenever every comparison was flagged suspect (the
+            # ratio path rejects those, the magnitude path does not).
+            has_mag = res.diff is not None and res.diff.mag is not None
+            has_ratio = res.relative is not None and res.relative.flux_ratio is not None
+            if not (has_mag or has_ratio):
                 continue
             self._emit_live_point(res, jd, air, fwhm, (lat, lon, elev))
         self._write_live_quality_report(tset)
@@ -1404,6 +1420,13 @@ class AcquisitionEngine(QObject):
             if lat is not None and lon is not None
             else None
         )
+        # Prefer the target's own altitude at the exposure midpoint over the
+        # mount's last reported altitude, which is sampled at an arbitrary
+        # instant. Fall back to the frame-level value when the site is unknown.
+        if lat is not None and lon is not None:
+            target_air = airmass_at(jd, res.star.ra_deg, res.star.dec_deg, float(lat), float(lon))
+            if target_air is not None:
+                air = target_air
         point = LcPoint(
             jd_utc=jd,
             mag=res.diff.mag if res.diff and res.diff.mag is not None else float("nan"),
@@ -1412,8 +1435,10 @@ class AcquisitionEngine(QObject):
             airmass=air,
             fwhm=fwhm,
             sky_adu=res.phot.sky_adu if res.phot else None,
-            comps_used=res.relative.comps_used if res.relative else 0,
+            comps_used=res.diff.comps_used if res.diff else 0,
+            relative_comps_used=res.relative.comps_used if res.relative else 0,
             saturated=bool(res.phot and res.phot.saturated),
+            suspect=bool(res.phot and res.phot.suspect),
             formal_mag_err=(
                 res.diff.formal_mag_err or res.diff.mag_err
                 if res.diff and res.diff.mag_err is not None

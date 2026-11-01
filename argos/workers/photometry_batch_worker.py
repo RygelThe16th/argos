@@ -5,8 +5,10 @@ measure a whole folder of already-saved subs against a target set, off the UI
 thread. Uses the SAME measurement core as the live path
 (:func:`argos.core.photometry.params.measure_frame` → ``measure_targets``), so
 comps get their catalog magnitudes and the physics is identical; the only
-intentional live/batch difference is the aperture FWHM (a saved sub carries no
-measured FWHM, so the aperture floors to ``aperture_min_px``).
+intentional live/batch difference is the aperture FWHM: this worker measures the
+field FWHM once, on the first readable frame, and holds it for the whole series.
+Only when no stars are detected does it fall through to ``DEFAULT_FWHM`` — which
+gives a *wider* aperture than the floor, not the floor itself.
 
 Emits progress + a per-frame point stream and writes the canonical 9-column
 CSVs (:meth:`LightCurve.to_csv`) so Analyze can reload the result. Cancellable
@@ -26,8 +28,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 from argos.core.catalog.targets import ROLE_CHECK, ROLE_COMPARISON, TargetSet
 from argos.core.imaging.green import green_plane
-from argos.core.imaging.sky_geometry import altitude_at
-from argos.core.photometry.airmass import airmass_from_altitude, bjd_tdb, julian_date
+from argos.core.photometry.airmass import airmass_at, bjd_tdb, julian_date
 from argos.core.photometry.lightcurve import LcPoint, LightCurve
 from argos.core.photometry.params import PhotometryParams, measure_frame
 from argos.core.photometry.tracking import ApertureTracker, TrackedWCS, select_tracking_anchors
@@ -202,7 +203,8 @@ class PhotometryBatchWorker(QThread):
 
         Time-series practice: a single radius for the whole run, sized from
         the measured seeing, instead of the aperture_min_px floor (saved subs
-        carry no FWHM header). None (→ floor) when no stars are detected.
+        carry no FWHM header). None when no stars are detected, which makes the
+        aperture fall back to ``DEFAULT_FWHM`` — wider than the floor.
         """
         from argos.core.imaging.metrics import detect_stars
 
@@ -259,7 +261,13 @@ class PhotometryBatchWorker(QThread):
         their keys are remembered for the K-RMS summary (comps are not).
         """
         for res in results:
-            if res.relative is None or res.relative.flux_ratio is None:
+            # Keep a point when *either* product exists. Requiring the flux
+            # ratio discarded good differential magnitudes whenever every
+            # comparison was flagged suspect (the ratio path rejects those,
+            # the magnitude path does not).
+            has_mag = res.diff is not None and res.diff.mag is not None
+            has_ratio = res.relative is not None and res.relative.flux_ratio is not None
+            if not (has_mag or has_ratio):
                 continue
             if res.star.role == ROLE_CHECK:
                 self._check_keys.add(res.star.auid or res.star.display_name)
@@ -274,15 +282,17 @@ class PhotometryBatchWorker(QThread):
                 airmass=self._airmass(jd, res.star),
                 fwhm=self._series_fwhm,
                 sky_adu=res.phot.sky_adu if res.phot else None,
-                comps_used=res.relative.comps_used,
+                comps_used=res.diff.comps_used if res.diff else 0,
+                relative_comps_used=res.relative.comps_used if res.relative else 0,
                 saturated=bool(res.phot and res.phot.saturated),
+                suspect=bool(res.phot and res.phot.suspect),
                 formal_mag_err=(
                     res.diff.formal_mag_err or res.diff.mag_err
                     if res.diff and res.diff.mag_err is not None
                     else None
                 ),
-                relative_flux=res.relative.flux_ratio,
-                relative_flux_err=res.relative.flux_ratio_err,
+                relative_flux=res.relative.flux_ratio if res.relative else None,
+                relative_flux_err=res.relative.flux_ratio_err if res.relative else None,
             )
             key = res.star.auid or res.star.display_name
             lc = curves.setdefault(
@@ -337,14 +347,13 @@ class PhotometryBatchWorker(QThread):
     def _airmass(self, jd: float | None, star) -> float | None:
         """Per-star airmass at this frame's JD (P4), or None without site/time.
 
-        Uses the fast trig altitude (no astropy) + the project-wide Pickering
-        airmass — the same formula as the FITS AIRMASS header.
+        Delegates to :func:`airmass_at`, which the live path now uses too, so
+        the two never drift apart.
         """
         lat, lon, _elev = self._req.site
         if jd is None or lat is None or lon is None:
             return None
-        alt = altitude_at(jd, star.ra_deg / 15.0, star.dec_deg, float(lat), float(lon))
-        return airmass_from_altitude(alt)
+        return airmass_at(jd, star.ra_deg, star.dec_deg, float(lat), float(lon))
 
     @staticmethod
     def _read_frame(fpath: Path) -> tuple[np.ndarray | None, float | None]:

@@ -39,6 +39,7 @@ class TargetStar:
     source: str = "manual"  # vsx | vsp | manual
     mags: dict = field(default_factory=dict)  # band -> magnitude
     note: str = ""
+    chart_id: str | None = None  # VSP chart that supplied ``mags`` (AAVSO CHART)
 
     def key(self) -> str:
         """Stable identity used to dedup/update (AUID, else rounded position)."""
@@ -138,6 +139,7 @@ class TargetSet:
                 "dec_deg_j2000": round(float(star.dec_deg), 8),
                 "catalogue_source": star.source,
                 "catalogue_magnitudes": dict(star.mags),
+                "catalogue_chart_id": star.chart_id,
                 "note": star.note,
             }
 
@@ -212,6 +214,18 @@ class TargetSet:
         except Exception as exc:  # corrupt file → start fresh, don't crash
             logger.warning("Could not read %s: %s", path, exc)
             return cls()
+
+
+def comparison_chart_id(stars) -> str | None:
+    """The VSP chart every comparison star comes from, else None.
+
+    It is what an AAVSO report puts in CHART. A manual comparison, or two
+    charts mixed in one ensemble, leave no single sequence to name.
+    """
+    charts = {s.chart_id for s in stars if s.role == ROLE_COMPARISON}
+    if len(charts) != 1:
+        return None
+    return charts.pop()
 
 
 def _separation_arcsec(a: TargetStar, b: TargetStar) -> float:

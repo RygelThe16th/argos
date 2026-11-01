@@ -210,11 +210,19 @@ During a live run ARGOS resolves the electron gain in order: the
 `ElectronsPerADU`, else the sensor reference curve for the profile's sensor.
 That value is what goes into `EGAIN` in the FITS header.
 
-**An offline re-measurement of saved subs does not do this.** It reads
-`camera.egain_table` only, and that table is empty by default — in which case
-$g$ falls back to **1.0** and ADU are treated as electrons. Every SNR from a
-batch re-measurement is then wrong, and every $\sigma_m$ with it. If you
-re-measure, populate `camera.egain_table` first.
+An **offline re-measurement** of saved subs resolves the same order minus the
+driver step, which needs a live handle: `camera.egain_table`, else the sensor
+reference curve. Both paths therefore agree on the same $g$ for the same frame.
+
+:::{admonition} Before 0.4.2
+:class: warning
+
+The offline path read `camera.egain_table` alone, and that table is empty by
+default — so $g$ fell back to **1.0** and ADU were treated as electrons. Every
+SNR and every $\sigma_m$ produced by a batch re-measurement under 0.4.1 or
+earlier is wrong by the gain, which is 1.723 e⁻/ADU for an IMX585 at gain 80,
+not 1.0. Re-measure those runs rather than trusting their error bars.
+:::
 ```
 
 ```{admonition} The read noise is one number for three sensors
@@ -299,12 +307,13 @@ only some of them act.
 | Excludes a **comparison** from the relative-flux sum | yes | yes |
 | Excludes it from automatic selection and from tracking anchors | yes | yes |
 | Removes a flagged **target** point from the curve | **no** | **no** |
-| Appears as a column in `photometry.csv` | yes | **no** |
+| Appears as a column in `photometry.csv` | yes | yes |
 
-So: a comparison star flagged only as *suspect* still contributes to the
-magnitude ensemble; and a *suspect* target point is measured, plotted, exported
-and invisible in the export. Judge suspect points from the live view, before you
-leave the field.
+So a comparison star flagged only as *suspect* still contributes to the
+magnitude ensemble, and a *suspect* target point is still measured, plotted and
+exported. What changed in 0.4.2 is that you can now **see** it afterwards: the
+flag is a column, so a suspicious point can be found in the file rather than
+only in the live view. Filtering on it is still your decision, not ARGOS's.
 ```
 
 ## 4. The comparison ensemble
@@ -652,14 +661,16 @@ than a large number, so a frame taken through the treetops has no airmass rather
 than a fictional one.
 
 ```{warning}
-The header and the light-curve point use the **same formula**, but not the same
-input. `AIRMASS` in the FITS header is computed for the exposure **start**; the
-light-curve point is timed at the **midpoint**, and takes its airmass from the
-mount's last reported altitude rather than from the target's altitude at that
-midpoint. On a long exposure near the horizon the two can differ. If airmass
-matters to your analysis — an extinction fit, a colour-term correction —
-recompute it from `DATE-AVG` and the target coordinates rather than trusting
-either number.
+The header and the light-curve point use the **same formula** but not the same
+instant, and they will not always agree. `AIRMASS` in the FITS header is
+computed for the exposure **start** from the mount's reported altitude. The
+light-curve point is timed at the **midpoint** and derives its airmass from the
+target's own coordinates at that JD (`airmass_at()`), which is the number an
+extinction fit wants. On a long exposure near the horizon the two differ by
+more than rounding.
+
+The point falls back to the frame-level value when no observing site is
+configured — without a latitude and longitude there is no altitude to compute.
 ```
 
 ## 8. What the export actually contains
@@ -675,31 +686,46 @@ prefixes `star_id`, `role`, `name` and `auid`; the rest is the same in both.
 | `mag_err` | mag | the **final** uncertainty: formal and systematic combined (§5) |
 | `formal_mag_err` | mag | the photon-only error of §3.4, before the floor |
 | `sigma_syst` | mag | the run-level systematic floor that was added |
-| `airmass` | — | from the mount's altitude, at exposure start-ish (see §7) |
+| `airmass` | — | from the target's coordinates at this point's JD (see §7) |
 | `fwhm` | green px | frame FWHM. **Multiply by 2 for full-resolution pixels**, then by the plate scale for arcsec |
 | `sky_adu` | ADU | annulus median for this star on this frame |
-| `comps_used` | count | **the flux-ratio ensemble count, not the magnitude one** — see the warning below |
+| `comps_used` | count | comparisons behind `mag` in this row — the zero-point ensemble of §4.1 |
 | `relative_flux` | — | $\rho$ of §4.4, un-normalised |
 | `relative_flux_err` | — | its propagated error |
+| `relative_comps_used` | count | comparisons behind $\rho$ in this row |
 | `saturated` | bool | the §3.5 saturation flag |
+| `suspect` | bool | the §3.5 PSF-support flag |
 
-```{warning}
-Two traps in this file.
-
-**`comps_used` is not the number of comparisons behind `mag`.** It is
-`relative.comps_used` — the count that produced $\rho$. The two ensembles are
-filtered differently (the flux path also rejects *suspect* stars, the magnitude
-path does not), so the number routinely differs from the one that built the zero
-point in the same row.
-
-**Rows are dropped when $\rho$ cannot be computed.** A point is only emitted if
-the relative-flux ratio exists. If every comparison is flagged *suspect*, a
-perfectly good differential magnitude is silently absent from the curve and the
-export — there is no row and no note. A curve with unexplained gaps is worth
-checking against the frame count before you conclude the star did something.
+```{note}
+**The two ensemble counts are both here because they genuinely differ.** The
+ratio path rejects *suspect* comparisons and the magnitude path does not
+(§3.5), so `relative_comps_used` is often smaller than `comps_used` on the same
+row. Each count belongs to the quantity beside it: read `comps_used` with
+`mag`, `relative_comps_used` with `relative_flux`.
 ```
 
-There is no `suspect` column: that flag never reaches the file (§3.5).
+A row is written whenever **either** product exists. A frame whose comparisons
+were all flagged *suspect* still yields a differential magnitude, so it still
+yields a row — with an empty `relative_flux` and `relative_comps_used = 0`.
+Only a frame that produced neither a magnitude nor a ratio is dropped.
+
+```{admonition} Before 0.4.2 — check your existing exports
+:class: warning
+
+Three of the columns above behaved differently in 0.4.1 and earlier, and none
+of the differences were visible from the interface:
+
+- `comps_used` carried the **flux-ratio** count, not the magnitude one. A file
+  from 0.4.1 states the wrong ensemble size beside every `mag`.
+- There was **no `suspect` column** and no `relative_comps_used`.
+- A row was written **only when $\rho$ existed**. A run in which every
+  comparison was flagged *suspect* silently lost its magnitudes — no row, no
+  note. If an old curve has gaps you never explained, compare its row count
+  against the frame count before concluding the star did something.
+
+Re-running the batch measurement on the saved frames regenerates the file
+correctly.
+```
 
 ## 9. The floor you cannot get under
 
@@ -734,7 +760,7 @@ the limit is not the atmosphere and is worth chasing.
 [Osborn et al. (2015)](https://doi.org/10.1093/mnras/stv1400) for how variable
 the coefficient really is from site to site.
 
-## 10. Known limits in 0.4.1
+## 10. Known limits in 0.4.2
 
 - **No calibration.** No dark, flat or bias. Flat-field residuals are the main
   reason the comparison ensemble is kept within 25 arcmin.
@@ -776,7 +802,7 @@ folder before reducing it.
 ## 11. Every constant on this page
 
 All of them are configuration keys, editable in **Settings** and stored in the
-JSON config. The defaults below are those of 0.4.1.
+JSON config. The defaults below are those of 0.4.2.
 
 | Key | Default | Sets |
 |---|---|---|
@@ -796,8 +822,8 @@ JSON config. The defaults below are those of 0.4.1.
 | `photometry.comparison_validation_max_scatter_mag` | `0.10` | above this scatter, *Unstable* — §6 |
 | `photometry.comparison_validation_max_formal_error_mag` | `0.10` | above this median error, *Noisy* — §6 |
 | `photometry.systematic_floor_mag` | `None` | `None` derives the floor from the curve; a number imposes it — §5 |
-| `photometry.track_apertures` | `True` | whether apertures follow a fitted rigid transform between frames or are re-derived from the WCS alone |
-| `camera.egain_table` | `{}` (empty) | $g$ in e⁻/ADU per gain setting. Empty means the **live** path asks the driver, then the sensor reference — but an **offline re-measurement silently uses 1.0** (§3.3) |
+| `photometry.track_apertures` | `True` | whether apertures follow a transform fitted between frames or are re-derived from the WCS alone. Live, on a mount in EQ mode the fit is a translation only, since there is no field rotation to follow; in alt-az mode it is rigid (rotation and translation). The offline batch re-measurement does not know the mount mode — saved frames do not record it — and always fits the rigid transform |
+| `camera.egain_table` | `{}` (empty) | $g$ in e⁻/ADU per gain setting. Empty is fine: the live path asks the driver then the sensor reference, and since 0.4.2 the offline path falls back to that same reference (§3.3) |
 
 ```{warning}
 Changing these changes what the numbers mean. Widening

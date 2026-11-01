@@ -6,7 +6,7 @@ or stamps a version — the window title, the Settings page, the FITS
 release is a one-line change.
 """
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"
 
 #: Software identity stamped into FITS headers by the writer.
 SOFTWARE_ID = f"Argos v{__version__}"

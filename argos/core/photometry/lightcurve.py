@@ -24,7 +24,9 @@ _COLUMNS = (
     "comps_used",
     "relative_flux",
     "relative_flux_err",
+    "relative_comps_used",
     "saturated",
+    "suspect",
 )
 
 #: Session export retains the identity and role of every measured star.  Older
@@ -44,12 +46,20 @@ class LcPoint:
     airmass: float | None = None
     fwhm: float | None = None
     sky_adu: float | None = None
+    #: Comparisons behind ``mag`` — the magnitude ensemble.
     comps_used: int = 0
     saturated: bool = False
+    #: Aperture peak lacked PSF support (hot pixel / cosmic ray suspicion).
+    #: Recorded, never used to drop a point: the observer decides.
+    suspect: bool = False
     formal_mag_err: float | None = None
     sigma_syst: float | None = None
     relative_flux: float | None = None
     relative_flux_err: float | None = None
+    #: Comparisons behind ``relative_flux``. Filtered differently from
+    #: ``comps_used`` (the ratio path also rejects *suspect* stars), so the two
+    #: legitimately differ on the same row.
+    relative_comps_used: int = 0
 
 
 @dataclass
@@ -103,7 +113,7 @@ class LightCurve:
 
 
 def _row(p: LcPoint) -> list:
-    """One CSV row (the canonical 9 columns) for a light-curve point."""
+    """One CSV row, in ``_COLUMNS`` order, for a light-curve point."""
     return [
         p.jd_utc,
         "" if p.bjd_tdb is None else p.bjd_tdb,
@@ -117,7 +127,9 @@ def _row(p: LcPoint) -> list:
         p.comps_used,
         "" if p.relative_flux is None else p.relative_flux,
         "" if p.relative_flux_err is None else p.relative_flux_err,
+        p.relative_comps_used,
         int(p.saturated),
+        int(p.suspect),
     ]
 
 
@@ -170,7 +182,9 @@ def _point_from_row(row: dict[str, str]) -> LcPoint:
         fwhm=_opt_float(row.get("fwhm")),
         sky_adu=_opt_float(row.get("sky_adu")),
         comps_used=int(row.get("comps_used") or 0),
+        relative_comps_used=int(row.get("relative_comps_used") or 0),
         saturated=bool(int(row.get("saturated") or 0)),
+        suspect=bool(int(row.get("suspect") or 0)),
         formal_mag_err=_opt_float(row.get("formal_mag_err")) or mag_err,
         sigma_syst=_opt_float(row.get("sigma_syst")),
         relative_flux=_opt_float(row.get("relative_flux")),
@@ -188,13 +202,29 @@ def _opt_float(value) -> float | None:
 
 
 def write_aavso(
-    path, curves, *, obscode: str = "XXX", filt: str = "TG", software: str = "Argos"
+    path,
+    curves,
+    *,
+    obscode: str = "XXX",
+    filt: str = "TG",
+    chart: str | None = None,
+    software: str = "Argos",
 ) -> None:
     """Write one or more :class:`LightCurve` to an AAVSO Extended File.
 
     A *preview* export — DATE is the JD_UTC midpoint, MTYPE=STD, comparison is the
     ensemble (CNAME=ENSEMBLE). Calibrated mags + BJD_TDB come from post-processing.
+
+    Only *target* curves become rows. The first *check* curve fills KNAME/KMAG with
+    its ensemble magnitude on the same frame — the check star the spec asks for
+    with ensemble photometry. ``chart`` is the VSP chart of the comparison
+    sequence (CHART).
     """
+    check = next((lc for lc in curves if lc.role == "check" and lc.points), None)
+    kname = _aavso_field(check.auid or check.name) if check is not None else None
+    # Target and check points of one frame share its JD.
+    kmags = {p.jd_utc: p.mag for p in check.points if math.isfinite(p.mag)} if kname else {}
+    chart_field = _aavso_field(chart) or "na"
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
@@ -216,7 +246,17 @@ def write_aavso(
                 if not (math.isfinite(p.mag) and math.isfinite(p.mag_err)):
                     continue
                 amass = "na" if p.airmass is None else f"{p.airmass:.3f}"
+                kmag = kmags.get(p.jd_utc)
+                check_fields = "na,na" if kmag is None else f"{kname},{kmag:.4f}"
                 f.write(
                     f"{name},{p.jd_utc:.6f},{p.mag:.4f},{p.mag_err:.4f},{filt},NO,STD,"
-                    f"ENSEMBLE,na,na,na,{amass},na,na,na\n"
+                    f"ENSEMBLE,na,{check_fields},{amass},na,{chart_field},na\n"
                 )
+
+
+def _aavso_field(value, limit: int = 20) -> str | None:
+    """``value`` as a KNAME/CHART field (at most ``limit`` characters, no comma)."""
+    value = str(value or "").strip()
+    if not value or len(value) > limit or "," in value:
+        return None
+    return value

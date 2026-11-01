@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from argos.core.catalog.targets import comparison_chart_id
 from argos.core.photometry.lightcurve import write_aavso, write_curves_csv
 from argos.ui import theme
 from argos.ui.widgets.comparison_table import ComparisonEnsembleTable
@@ -250,6 +251,8 @@ class PhotometryWindow(QWidget):
         self.lightcurves: dict = {}
         self.obscode = "XXX"
         self.filt = "TG"
+        # The selection behind the curves; its comparisons name the AAVSO CHART.
+        self._target_stars: list = []
 
     # ------------------------------------------------------------------
     # Real API (WS7): feed_point / set_export_meta / load_curves
@@ -281,6 +284,7 @@ class PhotometryWindow(QWidget):
 
     def set_targets(self, stars) -> None:
         """Refresh the Targets + Comparisons tabs from the target set."""
+        self._target_stars = list(stars)
         self.targets.set_targets(stars)
         self.comparisons.set_targets(stars)
 
@@ -306,11 +310,18 @@ class PhotometryWindow(QWidget):
             write_curves_csv(path, curves)  # canonical 9-column schema (+ target)
 
     def _export_aavso(self) -> None:
-        curves = [lc for lc in self.lightcurves.values() if lc.points and lc.role == "target"]
-        if not curves:
+        curves = [lc for lc in self.lightcurves.values() if lc.points]
+        if not any(lc.role == "target" for lc in curves):
             return
         path, _ = QFileDialog.getSaveFileName(
             self, "Export AAVSO", str(Path.home() / "aavso.txt"), "Text (*.txt)"
         )
         if path:
-            write_aavso(path, curves, obscode=self.obscode or "XXX", filt=self.filt or "TG")
+            # Check curves only fill KNAME/KMAG; write_aavso never makes them rows.
+            write_aavso(
+                path,
+                curves,
+                obscode=self.obscode or "XXX",
+                filt=self.filt or "TG",
+                chart=comparison_chart_id(self._target_stars),
+            )

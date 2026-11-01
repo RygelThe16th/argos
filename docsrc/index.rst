@@ -10,7 +10,7 @@ independently.
 The Seestar S30 Pro is the reference profile; the S30 and S50 profiles remain
 explicitly unvalidated for precision photometry.
 
-.. admonition:: 0.4.1 is a field-validation release
+.. admonition:: 0.4.2 is a field-validation release
    :class: warning
 
    It is meant for observers who keep their raw frames and reduce them

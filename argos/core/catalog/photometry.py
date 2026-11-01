@@ -162,6 +162,7 @@ def auto_comparison_stars(
                 name=None,
                 source="vsp_auto",
                 mags={b.band: b.mag for b in c.bands},
+                chart_id=c.chart_id,
             )
         )
         if len(picks) >= count:

@@ -148,6 +148,14 @@ class RigidTransform:
             self.cy + s * dx + c * dy + self.ty,
         )
 
+    def invert(self, x: float, y: float) -> tuple[float, float]:
+        """Map a current-frame point back into the reference frame."""
+        c, s = math.cos(self.theta_rad), math.sin(self.theta_rad)
+        # Undo the post-rotation translation, then rotate by -theta around
+        # the same pivot.  This is the inverse of :meth:`apply`.
+        dx, dy = x - self.cx - self.tx, y - self.cy - self.ty
+        return self.cx + c * dx + s * dy, self.cy - s * dx + c * dy
+
     @property
     def rotation_deg(self) -> float:
         return math.degrees(self.theta_rad)
@@ -201,6 +209,29 @@ def fit_rigid(
     )
 
 
+def fit_translation(
+    src: list[tuple[float, float]],
+    dst: list[tuple[float, float]],
+    cx: float,
+    cy: float,
+) -> RigidTransform:
+    """Least-squares translation-only mapping from ``src`` to ``dst``.
+
+    An equatorial mount has no field rotation, but it can still have small
+    guide/periodic drift.  Constraining this fit prevents centroid noise from
+    inventing a rotation and moving apertures at the edges of the sensor.
+    """
+    if len(src) != len(dst) or not src:
+        raise ValueError("fit_translation needs matched, non-empty point lists")
+    return RigidTransform(
+        theta_rad=0.0,
+        tx=float(np.mean([dx - sx for (sx, _sy), (dx, _dy) in zip(src, dst)])),
+        ty=float(np.mean([dy - sy for (_sx, sy), (_dx, dy) in zip(src, dst)])),
+        cx=cx,
+        cy=cy,
+    )
+
+
 class ApertureTracker:
     """Follow a fixed star geometry through a time-ordered frame sequence.
 
@@ -244,7 +275,7 @@ class ApertureTracker:
         self.residual_px = 0.0  # median |fit − measured| of the kept anchors
         self.frames_lost = 0  # consecutive frames with no anchor found
 
-    def update(self, green: np.ndarray) -> int:
+    def update(self, green: np.ndarray, *, allow_rotation: bool = True) -> int:
         """Re-fit the transform on one frame; returns anchors matched.
 
         On zero matches (clouds, slew glitch) the previous transform is kept —
@@ -253,6 +284,9 @@ class ApertureTracker:
         residual exceeds RESIDUAL_FLOOR_PX *and* refitting without it improves
         the median residual by REJECT_IMPROVEMENT — one wrong lock (hot pixel,
         neighbouring star) must not skew every aperture of the frame.
+
+        ``allow_rotation=False`` is for an EQ mount: it retains the genuine
+        frame translation while forbidding a spurious rotation fit.
         """
         matched_ref: list[tuple[float, float]] = []
         matched_meas: list[tuple[float, float]] = []
@@ -276,14 +310,15 @@ class ApertureTracker:
             return 0
         self.frames_lost = 0
 
-        t = fit_rigid(matched_ref, matched_meas, self.transform.cx, self.transform.cy)
+        fit = fit_rigid if allow_rotation else fit_translation
+        t = fit(matched_ref, matched_meas, self.transform.cx, self.transform.cy)
         residuals = self._residuals(t, matched_ref, matched_meas)
 
         if len(matched_ref) >= 3 and max(residuals) > self.RESIDUAL_FLOOR_PX:
             worst = int(np.argmax(residuals))
             kept_ref = matched_ref[:worst] + matched_ref[worst + 1 :]
             kept_meas = matched_meas[:worst] + matched_meas[worst + 1 :]
-            t2 = fit_rigid(kept_ref, kept_meas, self.transform.cx, self.transform.cy)
+            t2 = fit(kept_ref, kept_meas, self.transform.cx, self.transform.cy)
             res2 = self._residuals(t2, kept_ref, kept_meas)
             if float(np.median(res2)) < self.REJECT_IMPROVEMENT * float(np.median(residuals)):
                 logger.warning(
@@ -313,8 +348,9 @@ class ApertureTracker:
 class TrackedWCS:
     """Reference solve + live rigid correction, quacking like a FrameWCS.
 
-    Only ``world_to_pixel_deg`` is provided — that is all the measurement core
-    (``measure_targets``) uses.
+    It preserves both directions of the :class:`FrameWCS` interface.  Catalogue
+    overlays use ``world_to_pixel_deg``; field-geometry code needs the inverse
+    direction to recover the current frame centre.
     """
 
     def __init__(self, wcs, tracker: ApertureTracker) -> None:
@@ -324,3 +360,7 @@ class TrackedWCS:
     def world_to_pixel_deg(self, ra_deg: float, dec_deg: float) -> tuple[float, float]:
         x, y = self._wcs.world_to_pixel_deg(ra_deg, dec_deg)
         return self._tracker.transform.apply(float(x), float(y))
+
+    def pixel_to_radec(self, x: float, y: float) -> tuple[float, float]:
+        reference_x, reference_y = self._tracker.transform.invert(float(x), float(y))
+        return self._wcs.pixel_to_radec(reference_x, reference_y)

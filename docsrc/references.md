@@ -267,7 +267,7 @@ to a result, cite it as software with its version and repository:
 
 ```text
 Perret, J. 2026, ARGOS: differential photometry for smart telescopes,
-v0.4.1, https://github.com/jperret21/argos
+v0.4.2, https://github.com/jperret21/argos
 ```
 
 ```{important}

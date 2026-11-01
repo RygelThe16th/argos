@@ -15,9 +15,13 @@ from typing import Callable
 from argos.core.catalog.targets import TargetSet
 from argos.core.photometry.session import TargetResult, measure_targets
 
-#: Fallback FWHM (green px) when a frame's FWHM is unknown (batch re-run of a
-#: saved sub, which carries no measured FWHM on disk). The aperture then floors
-#: to ``aperture_min_px``.
+#: Fallback FWHM (green px) when a frame's FWHM is unknown.
+#:
+#: With the shipped defaults this does **not** fall back to the aperture floor,
+#: contrary to what this comment used to claim: ``max(4, 2.5 * 3.0) = 7.5`` green
+#: px, i.e. ~56 arcsec on an S30 Pro against ~30 arcsec for a frame with a
+#: measured FWHM. A measurement taken without a FWHM is therefore not directly
+#: comparable with one taken with it — more sky, and more neighbours.
 DEFAULT_FWHM = 3.0
 
 
@@ -64,7 +68,11 @@ class PhotometryParams:
         )
 
     def aperture_px(self, fwhm: float | None) -> float:
-        """FWHM-adaptive aperture radius, floored at ``aperture_min_px``."""
+        """FWHM-adaptive aperture radius, floored at ``aperture_min_px``.
+
+        An unknown ``fwhm`` substitutes :data:`DEFAULT_FWHM`, which lands
+        *above* the floor — see that constant's note.
+        """
         f = fwhm if fwhm else DEFAULT_FWHM
         return max(self.aperture_min_px, self.aperture_fwhm_mult * f)
 

@@ -72,7 +72,8 @@ class AlpacaClient:
 
     Args:
         host: IP address or hostname of the Alpaca server.
-        port: TCP port of the Alpaca server (default 4700 for Seestar).
+        port: TCP port of the Alpaca server (32323 on the Seestar; 4700 is
+            the separate native JSON-RPC port, not this one).
         get_timeout: Seconds before a GET request times out.
         put_timeout: Seconds before a PUT request times out.
     """

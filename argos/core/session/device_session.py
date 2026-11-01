@@ -273,6 +273,22 @@ class DeviceSession(QObject):
             self._mount_endpoint = (host, port)
             self._mount_retry.stop()
             self.log_message.emit("OK", f"Mount connected: {name}")
+            if scope.equatorial_system:
+                self.log_message.emit(
+                    "INFO",
+                    f"Mount coordinates: {scope.equatorial_system} → Argos J2000 conversion enabled.",
+                )
+            else:
+                self.log_message.emit(
+                    "WARN",
+                    "Mount coordinate system unavailable; assuming the driver accepts J2000.",
+                )
+            if scope.clock_error_seconds is not None and scope.clock_error_seconds > 60.0:
+                self.log_message.emit(
+                    "ERROR",
+                    "Mount clock is %.1f h off — correct date/time in the Seestar app; GoTo and Sync are disabled."
+                    % (scope.clock_error_seconds / 3600.0),
+                )
             self.device_state_changed.emit("mount", "connected", name)
             self.mount_mode.emit(scope.alignment_mode)
             self._start_polling()
@@ -296,6 +312,22 @@ class DeviceSession(QObject):
         self._telescope = scope
         self._mount_retry.stop()
         self.log_message.emit("OK", f"Mount reconnected: {name}")
+        if scope.equatorial_system:
+            self.log_message.emit(
+                "INFO",
+                f"Mount coordinates: {scope.equatorial_system} → Argos J2000 conversion enabled.",
+            )
+        else:
+            self.log_message.emit(
+                "WARN",
+                "Mount coordinate system unavailable; assuming the driver accepts J2000.",
+            )
+        if scope.clock_error_seconds is not None and scope.clock_error_seconds > 60.0:
+            self.log_message.emit(
+                "ERROR",
+                "Mount clock is %.1f h off — correct date/time in the Seestar app; GoTo and Sync are disabled."
+                % (scope.clock_error_seconds / 3600.0),
+            )
         self.device_state_changed.emit("mount", "connected", name)
         self.mount_mode.emit(scope.alignment_mode)
         self._start_polling()

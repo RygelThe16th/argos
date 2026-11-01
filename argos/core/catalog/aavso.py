@@ -120,6 +120,9 @@ class ComparisonStar:
     label: str  # chart label = mag×10 (e.g. "114" → V≈11.4)
     bands: tuple[Band, ...] = ()
     comments: str | None = None
+    # VSP chart the star was listed on — the AAVSO asks for it in the CHART
+    # field of a report so it can trace (and re-calibrate) the sequence used.
+    chart_id: str | None = None
 
     def mag(self, band: str = "V") -> float | None:
         """Magnitude in ``band`` if measured, else None."""
@@ -363,7 +366,8 @@ def vsp_chart(
         params["dec"] = f"{_quantize_deg(dec_deg):.4f}"
     data = _get_json(_VSP_URL, params, timeout, session)
     rows = (data or {}).get("photometry") or []
-    stars = [_parse_vsp_star(o) for o in rows]
+    chart_id = str((data or {}).get("chartid") or "").strip() or None
+    stars = [_parse_vsp_star(o, chart_id) for o in rows]
     logger.info(
         "VSP: %d comparison star(s) for %s (fov %.0f')",
         len(stars),
@@ -373,7 +377,7 @@ def vsp_chart(
     return stars
 
 
-def _parse_vsp_star(o: dict) -> ComparisonStar:
+def _parse_vsp_star(o: dict, chart_id: str | None = None) -> ComparisonStar:
     bands = tuple(
         Band(band=str(b.get("band", "")), mag=float(b["mag"]), error=_float_or_none(b.get("error")))
         for b in (o.get("bands") or [])
@@ -386,4 +390,5 @@ def _parse_vsp_star(o: dict) -> ComparisonStar:
         label=str(o.get("label", "")),
         bands=bands,
         comments=(o.get("comments") or None),
+        chart_id=chart_id,
     )

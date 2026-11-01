@@ -1,6 +1,6 @@
 [project]
 name = "argos"
-version = "0.4.1"
+version = "0.4.2"
 description = "Astrophotography control and differential photometry for ZWO Seestar telescopes via ASCOM Alpaca"
 requires-python = ">=3.11,<3.12"
 license = { file = "LICENSE" }

@@ -86,6 +86,19 @@ def test_auto_comparison_stars_ranks_converts_and_caps() -> None:
     assert picks[0].display_name == comps[0].auid
 
 
+def test_auto_comparison_stars_keep_the_vsp_chart() -> None:
+    comp = ComparisonStar(
+        auid="C1",
+        ra_deg=0.01,
+        dec_deg=0.1,
+        label="120",
+        bands=(Band("V", 12.0),),
+        chart_id="X42585ESI",
+    )
+    [pick] = auto_comparison_stars(0.0, 0.1, [comp], count=1)
+    assert pick.chart_id == "X42585ESI"
+
+
 def test_auto_comparison_stars_drops_off_frame_stars() -> None:
     # Target near the frame edge (100 px/° on a 100×100 frame): the closest
     # comparison projects outside the frame and must be skipped — an
