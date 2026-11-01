@@ -268,6 +268,39 @@ class TestCommands:
         assert mock_scope.TargetRightAscension == sent_ra
         assert mock_scope.TargetDeclination == sent_dec
 
+    def test_topocentric_ra_is_counted_from_the_equinox_of_date(
+        self, connected_telescope, mock_scope
+    ):
+        """At the equator the RA sent must carry the precession since J2000."""
+        connected_telescope._equatorial_system = 1
+        connected_telescope._site = (48.85, 2.35, 35.0)
+
+        connected_telescope.slew_to(6.0, 0.0)
+
+        sent_ra, _ = mock_scope.SlewToCoordinatesAsync.call_args.args
+        j2000 = datetime(2000, 1, 1, 12, tzinfo=timezone.utc)
+        years = (datetime.now(timezone.utc) - j2000).days / 365.25
+        # General precession in RA is 3.075 s/yr at the equator; nutation and
+        # annual aberration add at most ~2.5 s.  A CIO-based (CIRS) RA stays
+        # within a second of the J2000 value and fails this.
+        assert (sent_ra - 6.0) * 3600.0 == pytest.approx(3.075 * years, abs=3.0)
+
+    def test_topocentric_round_trip_returns_the_catalogue_position(
+        self, connected_telescope, mock_scope
+    ):
+        connected_telescope._equatorial_system = 1
+        connected_telescope._site = (48.85, 2.35, 35.0)
+
+        connected_telescope.slew_to(19.425, 42.792)
+        sent_ra, sent_dec = mock_scope.SlewToCoordinatesAsync.call_args.args
+        mock_scope.RightAscension = sent_ra
+        mock_scope.Declination = sent_dec
+
+        pos = connected_telescope.get_position()
+
+        assert pos.ra == pytest.approx(19.425, abs=1e-5)
+        assert pos.dec == pytest.approx(42.792, abs=1e-5)
+
     def test_topocentric_position_is_returned_as_j2000(self, connected_telescope, mock_scope):
         """Polling remains in Argos's documented ICRS/J2000 contract."""
         connected_telescope._equatorial_system = 1

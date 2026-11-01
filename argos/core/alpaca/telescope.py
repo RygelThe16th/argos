@@ -303,9 +303,12 @@ class Telescope:
         """Convert between Argos ICRS/J2000 and the driver's coordinates.
 
         ASCOM's ``equTopocentric`` means apparent coordinates at the current
-        date (precession, nutation and annual aberration included).  The error
-        from sending a J2000 catalogue position unconverted is already several
-        arcminutes today, enough to make a narrow target acquisition fail.
+        date (precession, nutation and annual aberration included), with right
+        ascension counted from the true equinox of date.  That is astropy's
+        ``TETE`` frame, not ``CIRS``: CIRS counts right ascension from the
+        CIO, which does not follow precession along the equator, so it leaves
+        out the term that dominates.  At the equator that term is about 21
+        arcminutes in 2026 and grows by 0.77 arcminutes a year.
 
         The transformation is intentionally at this wrapper boundary, so the
         rest of Argos — catalogue resolution, ASTAP, FITS and Stellarium —
@@ -316,7 +319,7 @@ class Telescope:
 
         try:
             import astropy.units as u
-            from astropy.coordinates import CIRS, FK4, FK5, EarthLocation, SkyCoord
+            from astropy.coordinates import FK4, FK5, TETE, EarthLocation, SkyCoord
             from astropy.time import Time
             from astropy.utils import iers
 
@@ -334,7 +337,7 @@ class Telescope:
                     frame_args["location"] = EarthLocation.from_geodetic(
                         longitude * u.deg, latitude * u.deg, elevation * u.m
                     )
-                frame = CIRS(**frame_args)
+                frame = TETE(**frame_args)
             elif self._equatorial_system == _EQU_J2050:
                 frame = FK5(equinox=Time("J2050"))
             elif self._equatorial_system == _EQU_B1950:
