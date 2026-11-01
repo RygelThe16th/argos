@@ -49,7 +49,7 @@
         <div class="session-readout">
           <div><span>Target</span><strong>XX Cyg</strong></div>
           <div><span>Solve</span><strong>3.67″/px</strong></div>
-          <div><span>Ensemble</span><strong>8 comparison stars</strong></div>
+          <div><span>Ensemble</span><strong>8 comparisons</strong></div>
           <div><span>Curve</span><strong>Differential mag</strong></div>
         </div>
         <figcaption><span>Live session, uncalibrated quick-look</span><span>0.4.1</span></figcaption>
@@ -89,8 +89,8 @@
         <div class="showcase-text">
           <p class="mono-label">Before the night</p>
           <h3>Plan it indoors.</h3>
-          <p>Type a designation — <code>RR Lyr</code>, <code>M57</code>, <code>HD 189733</code>. The built-in Messier/NGC/IC tables, AAVSO VSX and SIMBAD resolve it to J2000 coordinates, the altitude curve says when it clears your horizon, and a GoTo you trigger yourself sends the mount there.</p>
-          <p>Then build the run: light, dark, flat and bias steps, each with its own exposure, gain and frame count, and the total duration on screen before the first frame. It records unattended.</p>
+          <p>Type the star's name. ARGOS finds where it is, draws how high it climbs tonight, and points the telescope at it when you say go.</p>
+          <p>Then set the run: how many frames, how long each, and the darks, flats and bias to go with them. You see the total time before you commit to it. It shoots the rest on its own.</p>
         </div>
         <figure class="app-window">
           <div class="window-titlebar"><i class="window-dot"></i><i class="window-dot"></i><i class="window-dot"></i><b>ARGOS / plan</b><span class="window-state">RR LYR</span></div>
@@ -141,19 +141,21 @@
     <section class="home-section band">
       <div class="section-heading">
         <p class="mono-label">04 · One result</p>
-        <h2>A rising branch, on the published template.</h2>
+        <h2>Raw data, calibrated for science.</h2>
       </div>
       <p class="section-lede">ARGOS gives you the raw FITS frames. <a href="https://siril.org" target="_blank" rel="noopener">Siril</a> — free image-processing software — calibrates and registers them, and the <a href="https://github.com/jperret21/star_var_script" target="_blank" rel="noopener">star_var_script</a> extension turns them into a calibrated light curve. That is the scientifically valid measurement, and this is one.</p>
-      <figure class="app-window wide">
-        <picture><source srcset="img/rrlyrae-sesar-fit-dark.webp" type="image/webp"><img src="img/rrlyrae-sesar-fit-dark.png" alt="RR Lyrae light curve folded on a period of 0.56674 days, the observed points tracing the rising branch of the Sesar 2010 published template"></picture>
-        <div class="session-readout">
-          <div><span>Star</span><strong>RR Lyrae</strong></div>
-          <div><span>Period</span><strong>0.56674 d</strong></div>
-          <div><span>Observed</span><strong>Rising branch, ≈2.5 h</strong></div>
-          <div><span>Template</span><strong>Sesar 2010, r-band</strong></div>
-        </div>
-        <figcaption><span>One night of frames, folded on the catalogue period</span><span>AAVSO Extended export</span></figcaption>
-      </figure>
+      <div class="plot-split">
+        <figure class="app-window">
+          <picture><source srcset="img/rrlyrae-sesar-fit-dark.webp" type="image/webp"><img src="img/rrlyrae-sesar-fit-dark.png" alt="RR Lyrae light curve folded on a period of 0.56674 days, the observed points tracing the rising branch of the Sesar 2010 published template" loading="lazy"></picture>
+          <figcaption><span>One night of frames, folded on the catalogue period</span><span>AAVSO Extended export</span></figcaption>
+        </figure>
+        <dl class="plot-facts">
+          <div><dt>Star</dt><dd>RR Lyrae</dd></div>
+          <div><dt>Period</dt><dd>0.56674 d</dd></div>
+          <div><dt>Observed</dt><dd>Rising branch, &#8776;2.5 h</dd></div>
+          <div><dt>Template</dt><dd>Sesar 2010, r-band</dd></div>
+        </dl>
+      </div>
       <div class="release-checklist">
         <div><span>01 · ARGOS</span><strong>Records</strong><p>Timed FITS frames, a live differential curve, and the run-level uncertainty floor.</p></div>
         <div><span>02 · Siril</span><strong>Calibrates and registers</strong><p>Dark, flat and bias calibration, then registration of the untouched raw frames.</p></div>
