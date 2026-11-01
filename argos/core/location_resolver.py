@@ -12,9 +12,11 @@ from dataclasses import dataclass
 
 import requests
 
+from argos import __version__
+
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 _ELEVATION_URL = "https://api.open-meteo.com/v1/elevation"
-_HEADERS = {"User-Agent": "Argos/0.4.1 (astronomical observing-site search)"}
+_HEADERS = {"User-Agent": f"Argos/{__version__} (astronomical observing-site search)"}
 
 
 class LocationResolutionError(RuntimeError):
