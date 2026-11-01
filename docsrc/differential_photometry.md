@@ -822,7 +822,7 @@ JSON config. The defaults below are those of 0.4.2.
 | `photometry.comparison_validation_max_scatter_mag` | `0.10` | above this scatter, *Unstable* — §6 |
 | `photometry.comparison_validation_max_formal_error_mag` | `0.10` | above this median error, *Noisy* — §6 |
 | `photometry.systematic_floor_mag` | `None` | `None` derives the floor from the curve; a number imposes it — §5 |
-| `photometry.track_apertures` | `True` | whether apertures follow a fitted rigid transform between frames or are re-derived from the WCS alone |
+| `photometry.track_apertures` | `True` | whether apertures follow a transform fitted between frames or are re-derived from the WCS alone. Live, on a mount in EQ mode the fit is a translation only, since there is no field rotation to follow; in alt-az mode it is rigid (rotation and translation). The offline batch re-measurement does not know the mount mode — saved frames do not record it — and always fits the rigid transform |
 | `camera.egain_table` | `{}` (empty) | $g$ in e⁻/ADU per gain setting. Empty is fine: the live path asks the driver then the sensor reference, and since 0.4.2 the offline path falls back to that same reference (§3.3) |
 
 ```{warning}

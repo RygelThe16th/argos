@@ -1,12 +1,14 @@
 # Argos 0.4.2 — photometry corrections
 
 > Branch: `release/0.4.2`, cut from `main` with `release/0.4.1` merged in.
-> Last updated: 2026-09-10.
+> Last updated: 2026-11-01.
 
 A patch release with no new features. It exists because writing the 0.4.1
 documentation against the source turned up five measurement defects, none of
 which were visible from the interface — the curve looked the same, the file
-looked the same, and the numbers were wrong.
+looked the same, and the numbers were wrong. Three fixes outside photometry
+joined it later: GoTo coordinates, aperture tracking on an EQ mount, and the
+Observe window freezing on dense fields.
 
 If you have exports from 0.4.1 or earlier, **three of the five affect files you
 already hold**. Re-running the batch measurement on the saved frames
@@ -73,6 +75,52 @@ although Argos had the data.
   `photometry_selection.json` hand-off (`catalogue_chart_id`), so
   star_var_script reports it too.
 
+## Mount: GoTo and Sync coordinates
+
+ASCOM takes `SlewToCoordinates` and `SyncToCoordinates` in the driver's
+`EquatorialSystem`, and most drivers report topocentric of date. Everything in
+ARGOS — catalogues, ASTAP, FITS, Stellarium — is ICRS/J2000, and 0.4.1 sent it
+unconverted.
+
+- On connect, ARGOS reads `EquatorialSystem` and converts at the telescope
+  wrapper only: outgoing GoTo and Sync into the driver's system, positions read
+  back into J2000. The Activity log names the system on every connect.
+- Topocentric of date is converted to astropy's `TETE` frame (true equator,
+  true equinox of date), at the mount's site when the firmware exposes it.
+  **The first version of this fix used `CIRS`**, which counts right ascension
+  from the CIO and so leaves out precession along the equator: measured on
+  2026-11-01, CIRS and TETE differ by 16–21′ on the sky for Vega, an equatorial
+  star and a star at −30°, and for Vega CIRS was further from the true place
+  than raw J2000. Corrected before tagging; a test now pins the right ascension
+  sent for an equatorial star to the precession since J2000 (3.075 s/yr), which
+  CIRS fails.
+- ARGOS writes the mount clock and reads it back. Some Seestar firmware accepts
+  the write and keeps a stale clock, which turns an EQ GoTo into an hour-angle
+  error; above 60 s of offset GoTo and Sync are refused, with a message saying
+  by how many hours.
+- Astropy's IERS auto-download is off for these conversions, so a live GoTo
+  never waits on the network.
+
+## Aperture tracking on an EQ mount
+
+There is no field rotation on an equatorial mount, but the rigid fit still
+found some in centroid noise and turned every aperture about the sensor centre,
+moving stars near the edges. Live, in the `EQ` and `EQ (GEM)` alignment modes,
+the tracker now fits a translation only.
+
+**Not done for the offline batch re-measurement**: saved frames do not record
+the mount's alignment mode, so it cannot tell and still fits the rigid
+transform. Recording the mode in the FITS header would close this; it is a
+format change, left for a later version.
+
+## Observe window on dense fields
+
+Catalogue delivery, plate solves and aperture tracking each re-projected the
+whole overlay synchronously, and together they held the Qt event loop long
+enough to show the busy cursor. Redraws now go through a 75 ms timer that folds
+a burst into one projection, and the Gaia–SIMBAD identity match runs in NumPy
+blocks of 256 stars instead of nested loops.
+
 ## Also
 
 - Alpaca docstrings called port 4700 the default; it is the native JSON-RPC
@@ -83,16 +131,26 @@ although Argos had the data.
 
 ## State of the branch
 
-- 514 tests pass, 45 skipped; `ruff` and `black` clean.
+- 575 tests pass, 71 skipped; `ruff` and `black` clean.
 - Sphinx builds with `-W` and no warnings.
 - The documentation now describes 0.4.2 behaviour, with a *Before 0.4.2* box
   at each of the two places where an old file reads differently
-  (`differential_photometry` §3.3 and §8).
+  (`differential_photometry` §3.3 and §8). The guide, the protocol page and the
+  configuration table cover the mount clock, the coordinate conversion and EQ
+  tracking.
+- `main`'s site work since the cut is merged in.
 
-## Before tagging
+## Release
 
-- [ ] Build the macOS DMG and the Debian package, tag `v0.4.2`.
-- [ ] Update the download names and the release-tag links in `README.md`,
-      `docsrc/install.md` and the public site (`docs/install.html`,
-      `docs/index.html`) — they still point at the 0.4.1 artefacts on purpose,
-      because those are the files that currently exist.
+- [ ] Tag `v0.4.2`. The Release workflow builds the DMG and the Debian package
+      and attaches them to a **draft** release.
+- [ ] At the telescope, before publishing: the Activity log names the
+      coordinate system the Seestar reports on connect, and a GoTo on a known
+      star lands it at the centre of the frame — in EQ mode as well as alt-az.
+- [ ] Download both installers from the draft, then publish it.
+- [ ] Update the download names, sizes, date and release-tag links in
+      `README.md`, `docsrc/install.md` and the public site
+      (`docs/install.html`, `docs/index.html`). They point at the 0.4.1
+      artefacts until then on purpose: those are the files that exist, and
+      the sizes can only be read from the published ones.
+- [ ] Merge into `main`, which redeploys the site and the documentation.

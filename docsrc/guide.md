@@ -60,7 +60,7 @@ left. Learn these now and the rest of the guide has somewhere to hang.
 |---|---|
 | **Connection** | A two-minute setup stop: find the Seestar, connect the four devices. |
 | **Observe** | Where the night happens. The image, the camera controls, focus, the mount, the overlays and the live curve are all here, as movable docks. |
-| **Plan** | Build and run the acquisition sequence. Its heading reads *Sequencer*; it is the same screen. |
+| **Plan** | Build and run the acquisition sequence. |
 | **Review** | Post-session, offline. Curves, quality trends, frames, AAVSO export. |
 | **Settings** | Observer, site, paths, telescope profile, catalogues. |
 
@@ -286,6 +286,10 @@ filter is a selector inside **Acquisition**, and in the sequence rows.
   catalogue controls live under the same **Field** menu.
 - In the Telescope panel, command the GoTo only after checking the name, the
   coordinates and the intended target.
+- GoTo and Sync are refused when the mount's clock is more than 60 s from the
+  computer's after ARGOS has set it — some Seestar firmware accepts the time
+  and keeps its old one. The Activity log says by how many hours. Correct the
+  date and time in the Seestar app, then reconnect.
 - The context bar under the image shows the frame name and session progress;
   detailed statistics stay in their own panel.
 
