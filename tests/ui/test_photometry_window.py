@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import pytest
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QTextDocument
 from PyQt6.QtWidgets import QApplication
 
 from argos.core.photometry.lightcurve import LcPoint, LightCurve
@@ -50,8 +52,35 @@ def test_photometry_window_accepts_points_and_metrics(qapp) -> None:
 
 def test_marker_tooltip_accepts_pyqtgraph_keyword_arguments() -> None:
     """PyQtGraph 0.13 calls the tooltip callback with named x/y/data values."""
-    assert _marker_tip(x=12.5, y=7.0, data="HD 189733") == "HD 189733"
-    assert _marker_tip(x=12.5, y=7.0, data="<source>") == "&lt;source&gt;"
+    assert _marker_tip(x=12.5, y=7.0, data="HD 189733") == (
+        '<p style="white-space:pre">HD 189733</p>'
+    )
+    assert _marker_tip(x=12.5, y=7.0, data="<source>") == (
+        '<p style="white-space:pre">&lt;source&gt;</p>'
+    )
+    assert _marker_tip(x=12.5, y=7.0, data=None) == ""
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Selected reference star\nAUID 000-BPM-472\n"
+        "Catalogue magnitudes  V 11.848\nRA 00h12m34.5s  Dec +44°39'23.1\"",
+        "VSP reference candidate\nAUID 000-BDC-868\nDec -05°01'02.0\"",
+        "<source> & friends",
+    ],
+)
+def test_marker_tooltip_renders_quotes_and_markup_literally(qapp, text: str) -> None:
+    """Qt must render the tooltip as rich text so the escaping decodes once.
+
+    A plain-text tooltip shows ``&#x27;`` / ``&quot;`` verbatim instead of the
+    arcminute and arcsecond symbols of a declination.
+    """
+    tip = _marker_tip(x=0.0, y=0.0, data=text)
+    assert Qt.mightBeRichText(tip)
+    doc = QTextDocument()
+    doc.setHtml(tip)
+    assert doc.toPlainText() == text
 
 
 def test_field_filter_bar_keeps_zero_result_layers_clickable(qapp) -> None:

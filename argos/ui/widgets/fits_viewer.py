@@ -57,8 +57,17 @@ def _marker_tip(*_args: object, data: object = None, **_kwargs: object) -> str:
     PyQtGraph invokes custom tips with keyword arguments (``x``, ``y`` and
     ``data``); accepting both calling conventions keeps this callback valid
     across supported PyQtGraph releases.
+
+    PyQtGraph passes the string straight to ``setToolTip``, and Qt shows a
+    string without leading markup as plain text, so escaped entities would
+    appear literally (``Dec +44°39&#x27;23.1&quot;``). The escaped text is
+    therefore wrapped as rich text: catalogue names still cannot inject
+    markup, and ``white-space: pre`` keeps the line breaks and aligned spaces.
     """
-    return html.escape(str(data or ""))
+    text = str(data or "")
+    if not text:
+        return ""
+    return f'<p style="white-space:pre">{html.escape(text)}</p>'
 
 
 def _to_qimage(arr: np.ndarray) -> QImage:
