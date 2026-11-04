@@ -54,6 +54,7 @@ from argos.ui.statusbar import TopStatusBar
 from argos.ui.widgets.astrometry_settings import (
     SECTION_ASTROMETRY,
     SECTION_CATALOG,
+    SECTION_RECENTER,
     AstrometrySettingsDialog,
 )
 from argos.workers.camera_service import CameraState
@@ -263,6 +264,10 @@ class Shell(QMainWindow):
         catalog = QAction("Configure catalogues…", self)
         catalog.triggered.connect(lambda: self._open_astrometry_settings(SECTION_CATALOG))
         astrometry.addAction(catalog)
+        recenter = QAction("Configure re-centering…", self)
+        recenter.setToolTip("Opt-in: nudge the mount back between sequence frames when it drifts")
+        recenter.triggered.connect(lambda: self._open_astrometry_settings(SECTION_RECENTER))
+        astrometry.addAction(recenter)
 
         # Photometry owns field-star selection and the live diagnostics. Field
         # identification/ASTAP setup stays in the separate Field menu.

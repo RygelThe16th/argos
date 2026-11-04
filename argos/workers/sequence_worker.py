@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import threading
 import time
 from datetime import datetime, timezone
@@ -87,6 +88,10 @@ class SequenceWorker(QThread):
         progress(int, int, float):       frames_done, total, eta_seconds.
         autofocus_due():                 the controller should run autofocus, then call
                                          :meth:`resume_after_autofocus`.
+        mount_nudged(str, object):       kind ("dither" | "calibrate" | "recenter"),
+                                         info dict — the mount moved between frames
+                                         and has settled; emitted before the next
+                                         exposure starts.
         error_occurred(str):             a recoverable/terminal error message.
         finished(bool):                  True if the plan completed fully, else False.
     """
@@ -97,6 +102,7 @@ class SequenceWorker(QThread):
     progress = pyqtSignal(int, int, float)
     frame_image = pyqtSignal(object)  # full uint16 array, for live display
     autofocus_due = pyqtSignal()
+    mount_nudged = pyqtSignal(str, object)
     paused = pyqtSignal(bool)  # the run is holding at a frame boundary
     error_occurred = pyqtSignal(str)
     finished = pyqtSignal(bool)
@@ -124,6 +130,11 @@ class SequenceWorker(QThread):
         self._pause_gate = threading.Event()
         self._pause_gate.set()
         self._run_id = ""
+        # One pending between-frames move (re-centering), set from the UI
+        # thread and consumed at the next frame boundary.
+        self._move_lock = threading.Lock()
+        self._pending_move = None
+        self._next_frame_move: str | None = None
 
     # ------------------------------------------------------------------ #
     # Control
@@ -150,6 +161,16 @@ class SequenceWorker(QThread):
     def resume_after_autofocus(self) -> None:
         """Resume the loop after the controller has finished autofocus."""
         self._resume.set()
+
+    def request_move(self, request) -> None:
+        """Queue a :class:`~argos.core.imaging.recenter.MoveRequest`.
+
+        Thread-safe. The move runs after the frame being exposed has been
+        saved — never during an exposure. A newer request replaces an
+        unexecuted one.
+        """
+        with self._move_lock:
+            self._pending_move = request
 
     # ------------------------------------------------------------------ #
     # Thread body
@@ -227,7 +248,12 @@ class SequenceWorker(QThread):
             self.progress.emit(done, total, avg * (total - done))
 
             if spec.dither_every > 0 and done % spec.dither_every == 0:
-                self._dither()
+                self._dither(done)
+                if self._stop_flag:
+                    return False
+
+            if spec.is_light:
+                self._apply_pending_move(done)
                 if self._stop_flag:
                     return False
 
@@ -246,7 +272,7 @@ class SequenceWorker(QThread):
     # Helpers
     # ------------------------------------------------------------------ #
 
-    def _dither(self) -> None:
+    def _dither(self, done: int = 0) -> None:
         """Nudge the mount a few arcminutes so stars land on fresh pixels.
 
         A short MoveAxis pulse on both axes with alternating sign, then a
@@ -269,6 +295,14 @@ class SequenceWorker(QThread):
                 _DITHER_SETTLE_S,
             )
             self._interruptible_sleep(_DITHER_SETTLE_S)
+            self.mount_nudged.emit(
+                "dither",
+                {
+                    "durations_s": (sign * _DITHER_PULSE_S, -sign * _DITHER_PULSE_S),
+                    "rate_deg_s": _DITHER_RATE_DEG_S,
+                    "next_frame": done + 1,
+                },
+            )
         except Exception:  # pragma: no cover - best effort, never abort the run
             logger.warning("Dither move failed — continuing without", exc_info=True)
             try:
@@ -276,6 +310,63 @@ class SequenceWorker(QThread):
                 self._telescope.move_axis(1, 0.0)
             except Exception:
                 pass
+
+    def _apply_pending_move(self, done: int) -> None:
+        """Run a queued re-centering move at this frame boundary.
+
+        Both axes start together; each stops after its own duration. The
+        settle wait follows, then :attr:`mount_nudged` tells the engine which
+        frame is the first one after the move. Best-effort: a failed move is
+        logged and the run continues.
+        """
+        with self._move_lock:
+            request, self._pending_move = self._pending_move, None
+        if request is None:
+            return
+        if self._telescope is None:
+            self.mount_nudged.emit(request.kind, {"skipped": "no mount", "next_frame": done + 1})
+            return
+        rate = abs(float(request.rate_deg_s))
+        pulses = [
+            (abs(t), axis, math.copysign(rate, t))
+            for axis, t in enumerate(request.durations_s)
+            if t != 0.0
+        ]
+        try:
+            for _, axis, axis_rate in pulses:
+                self._telescope.move_axis(axis, axis_rate)
+            elapsed = 0.0
+            for seconds, axis, _ in sorted(pulses):
+                self._interruptible_sleep(seconds - elapsed)
+                elapsed = seconds
+                self._telescope.move_axis(axis, 0.0)
+            logger.info(
+                "Recenter (%s): axis pulses %+.2fs / %+.2fs at %.3f°/s, settling %.0fs",
+                request.kind,
+                request.durations_s[0],
+                request.durations_s[1],
+                rate,
+                request.settle_s,
+            )
+            self._interruptible_sleep(request.settle_s)
+        except Exception as exc:
+            logger.warning("Recenter move failed — continuing without", exc_info=True)
+            for _, axis, _ in pulses:
+                try:
+                    self._telescope.move_axis(axis, 0.0)
+                except Exception:
+                    pass
+            self.mount_nudged.emit(request.kind, {"skipped": str(exc), "next_frame": done + 1})
+            return
+        self._next_frame_move = request.kind
+        self.mount_nudged.emit(
+            request.kind,
+            {
+                "durations_s": tuple(request.durations_s),
+                "rate_deg_s": rate,
+                "next_frame": done + 1,
+            },
+        )
 
     def _wait_if_paused(self) -> bool:
         """Hold while the pause gate is down; False if stopped meanwhile."""
@@ -434,7 +525,9 @@ class SequenceWorker(QThread):
             sky_adu=round(metrics.sky_adu, 1) if metrics else None,
             peak_adu=metrics.peak_adu if metrics else None,
             eccentricity=ecc,
+            mount_move=self._next_frame_move,
         )
+        self._next_frame_move = None
         self._append_session(start_dt, record)
         return str(path), record
 

@@ -38,6 +38,11 @@ Modules
    :undoc-members:
    :show-inheritance:
 
+.. automodule:: argos.core.imaging.recenter
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 .. automodule:: argos.core.imaging.green
    :members:
    :undoc-members:

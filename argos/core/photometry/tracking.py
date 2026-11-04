@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -274,6 +274,17 @@ class ApertureTracker:
         self.anchors_signal_rejected = 0  # measurements rejected as a lost anchor
         self.residual_px = 0.0  # median |fit − measured| of the kept anchors
         self.frames_lost = 0  # consecutive frames with no anchor found
+
+    def shift_by(self, dx: float, dy: float) -> None:
+        """Feed a known field translation forward (a deliberate mount move).
+
+        The anchor search windows are only a few pixels wide; a move larger
+        than that would lose every anchor. Shifting the transform by the
+        measured move puts the windows back on the stars for the next update.
+        """
+        self.transform = replace(
+            self.transform, tx=self.transform.tx + float(dx), ty=self.transform.ty + float(dy)
+        )
 
     def update(self, green: np.ndarray, *, allow_rotation: bool = True) -> int:
         """Re-fit the transform on one frame; returns anchors matched.

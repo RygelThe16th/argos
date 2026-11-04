@@ -54,6 +54,12 @@ from argos.core.imaging.fits_writer import FITSWriter, FrameContext
 from argos.core.imaging.green import green_plane
 from argos.core.imaging.metrics import measure_star_at
 from argos.core.imaging.platesolve import angular_separation_deg
+from argos.core.imaging.recenter import (
+    KIND_DITHER,
+    Recenterer,
+    RecenterSettings,
+    frame_shift,
+)
 from argos.core.photometry.airmass import (
     airmass_at,
     airmass_from_altitude,
@@ -192,6 +198,16 @@ class AcquisitionEngine(QObject):
         # solves, so apertures and catalog markers stay on the stars during an
         # alt-az sequence. Rebuilt on a fresh solve or a target-set change.
         self._tracker: ApertureTracker | None = None
+
+        # Opt-in re-centering (recenter.*): built per sequence run. The green
+        # plane of the last measured frame is kept to measure a mount move
+        # against the first frame after it.
+        self._recenter: Recenterer | None = None
+        self._recenter_target_key: str | None = None
+        self._recenter_prev_green: np.ndarray | None = None
+        self._recenter_post_move: tuple[str, tuple[float, float], int] | None = None
+        # A measured move with no tracker yet: applied when it is built.
+        self._recenter_pending_shift: tuple[float, float] | None = None
 
         # Last sequence directory (for the photometry setup window).
         self._last_sequence_dir: Path | None = None
@@ -474,10 +490,12 @@ class AcquisitionEngine(QObject):
         self._sequence.frame_saved.connect(self._on_seq_frame_saved)
         self._sequence.progress.connect(self._on_seq_progress)
         self._sequence.autofocus_due.connect(self._on_seq_autofocus_due)
+        self._sequence.mount_nudged.connect(self._on_mount_nudged)
         self._sequence.paused.connect(self.sequence_paused)
         self._sequence.error_occurred.connect(self._on_seq_error)
         self._sequence.finished.connect(self._on_seq_finished)
         self._on_complete = plan.on_complete
+        self._start_recenter()
 
         self._sequence.start()
         self.sequence_running.emit(True)
@@ -587,6 +605,9 @@ class AcquisitionEngine(QObject):
 
     def _on_seq_finished(self, completed: bool) -> None:
         self._sequence = None
+        self._recenter = None
+        self._recenter_prev_green = None
+        self._recenter_post_move = None
         # Hand the camera back (state_changed → "Idle" in the status bar). If
         # the sequence died while a mid-run autofocus held the camera, this
         # just cancels the pending resume — AF releases to IDLE on its own.
@@ -1376,6 +1397,9 @@ class AcquisitionEngine(QObject):
             return wcs
         if self._tracker is None:
             self._tracker = self._build_live_tracker(green, wcs, tset, params)
+            if self._recenter_pending_shift is not None:
+                self._tracker.shift_by(*self._recenter_pending_shift)
+        self._recenter_pending_shift = None
         telescope = self._session.telescope
         # The alt-az tracker needs a rigid rotation + translation.  On an EQ
         # wedge there is no field rotation, so only retain measured drift;
@@ -1439,9 +1463,11 @@ class AcquisitionEngine(QObject):
         frame_no = self._diag_frame
         self._diag_frame += 1
         green = green_plane(self._last_raw)
+        self._recenter_account_move(green)
+        frame_wcs = self._wcs_for_frame(green, tset, params)
         results = measure_frame(
             green,
-            self._wcs_for_frame(green, tset, params),
+            frame_wcs,
             tset,
             params,
             fwhm=fwhm,
@@ -1475,6 +1501,116 @@ class AcquisitionEngine(QObject):
                 continue
             self._emit_live_point(res, jd, air, fwhm, (lat, lon, elev))
         self._write_live_quality_report(tset)
+        self._recenter_observe(green, frame_wcs, tset)
+
+    # ------------------------------------------------------------------
+    # Re-centering between sequence frames (recenter.*, off by default)
+    # ------------------------------------------------------------------
+
+    def _start_recenter(self) -> None:
+        settings = RecenterSettings.from_config(self._cfg)
+        self._recenter = Recenterer(settings) if settings.enabled else None
+        self._recenter_target_key = None
+        self._recenter_prev_green = None
+        self._recenter_post_move = None
+        self._recenter_pending_shift = None
+        if self._recenter is None:
+            return
+        if not PhotometryParams.from_config(self._cfg).track_apertures:
+            self._recenter.disabled_reason = "aperture tracking is off"
+            self.log_message.emit(
+                "WARN", "Recenter disabled: it needs photometry.track_apertures to follow moves."
+            )
+            return
+        if self._session.telescope is None:
+            self.log_message.emit("WARN", "Recenter enabled but no mount is connected.")
+        detail = (
+            f"drift > {settings.threshold_px:.0f} px"
+            if settings.mode == "threshold"
+            else f"every {settings.every_n} frames"
+        )
+        self.log_message.emit(
+            "INFO",
+            f"Recenter on ({detail}). The mount is nudged between exposures only; "
+            "the first correction calibrates each axis with a short pulse.",
+        )
+
+    @pyqtSlot(str, object)
+    def _on_mount_nudged(self, kind: str, info) -> None:
+        """The worker moved the mount between frames (before frame ``next_frame``)."""
+        rec = self._recenter
+        if rec is None or not rec.active:
+            return
+        info = dict(info or {})
+        next_frame = int(info.get("next_frame", 0))
+        if "skipped" in info:
+            rec.move_dropped()
+            self.log_message.emit("WARN", f"Recenter: {kind} move not made — {info['skipped']}")
+            return
+        durations = tuple(float(t) for t in info.get("durations_s", (0.0, 0.0)))
+        self._recenter_post_move = (kind, durations, next_frame)
+        self._astrometry.note_internal_move()
+        if kind != KIND_DITHER:
+            self.log_message.emit(
+                "CMD",
+                f"Recenter: mount moved ({kind}, pulses {durations[0]:+.2f}s / "
+                f"{durations[1]:+.2f}s) — frame #{next_frame} is the first after the move",
+            )
+
+    def _recenter_account_move(self, green: np.ndarray) -> None:
+        """First frame after a move: measure it, feed it to the tracker."""
+        rec, post = self._recenter, self._recenter_post_move
+        if rec is None or post is None:
+            return
+        self._recenter_post_move = None
+        kind, durations, _next = post
+        prev = self._recenter_prev_green
+        shift = frame_shift(prev, green) if prev is not None else None
+        if shift is not None and shift.reliable:
+            if self._tracker is not None:
+                self._tracker.shift_by(shift.dx, shift.dy)
+                self.apertures_tracked.emit()
+            else:
+                self._recenter_pending_shift = (shift.dx, shift.dy)
+        for event in rec.after_move(kind, durations, shift):
+            self.log_message.emit(event.level, event.message)
+
+    def _recenter_observe(self, green: np.ndarray, frame_wcs, tset: TargetSet) -> None:
+        rec = self._recenter
+        if rec is None or self._sequence is None:
+            return
+        self._recenter_prev_green = green
+        if not rec.active:
+            return
+        targets = tset.by_role(ROLE_TARGET)
+        if not targets or frame_wcs is None:
+            return
+        target = targets[0]
+        key = target.auid or target.display_name
+        if key != self._recenter_target_key:
+            # A different target is a different framing — never "correct" the
+            # mount towards the old one.
+            self._recenter_target_key = key
+            rec.reset()
+        tracker = self._tracker
+        tracking_ok = tracker is not None and tracker.anchors_used > 0
+        try:
+            xy = frame_wcs.world_to_pixel_deg(target.ra_deg, target.dec_deg)
+            xy = (float(xy[0]), float(xy[1]))
+        except Exception:
+            xy = None
+        request, events = rec.observe(xy, tracking_ok)
+        for event in events:
+            self.log_message.emit(event.level, event.message)
+        if request is None:
+            return
+        self._sequence.request_move(request)
+        self.log_message.emit(
+            "INFO",
+            f"Recenter: {request.reason or request.kind} — pulses "
+            f"{request.durations_s[0]:+.2f}s / {request.durations_s[1]:+.2f}s "
+            "queued for after the current exposure",
+        )
 
     def _write_live_quality_report(self, target_set: TargetSet) -> None:
         """Persist non-destructive leave-one-out comparison diagnostics.

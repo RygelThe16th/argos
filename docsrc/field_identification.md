@@ -120,6 +120,43 @@ check: common shifts can be caused by clouds, focus, tracking, saturation or a
 changing sky background. Use Review to follow a suspicious curve point back to
 its source FITS frame.
 
+### Re-centering between frames (opt-in)
+
+An unguided mount drifts. On an EQ wedge one observed run walked about 11′ an
+hour, until the comparison stars left the frame after roughly 80 minutes.
+**Field → Configure re-centering…** can pull the field back during a sequence.
+It is **off by default**.
+
+- **What is held.** ARGOS holds the photometry target at the pixel position it
+  had on the first measured frame of the run. That is your framing, not the
+  sensor centre. A dither moves that position by the measured dither offset.
+- **How drift is measured.** The target is projected through the tracked WCS on
+  every photometry frame, so a failed ASTAP solve does not stop the measurement.
+- **When it corrects.** Choose either *when the drift passes a threshold* (green
+  pixels) or *every N frames* (skipped inside a small deadband).
+- **How it moves.** The mount is nudged with MoveAxis pulses **between
+  exposures only**. A correction decided on one frame runs after the exposure
+  already in progress, then waits the settle time.
+- **Calibration.** The first correction calibrates the mount. ARGOS sends one
+  short pulse per axis and measures how far the field actually moved, by phase
+  correlation of the frames on either side of the move. Nominal rates are not
+  trusted: a dither nominally ±180″ moved the field only ~18 px on the Seestar.
+- **Each move is measured.** The measured shift is fed to the aperture tracker,
+  so the apertures stay on their stars across the jump. It also keeps the
+  mount's new reported position from being taken for an external slew.
+- **Safety.** One correction is capped (*Largest single correction*).
+  Re-centering switches itself off with a warning in two cases: the
+  calibration cannot steer both axes, or two corrections in a row leave the
+  drift no smaller. It also needs `photometry.track_apertures`.
+- **What is recorded.** The Activity log records each decision, each pulse and
+  the residual drift after a correction. It also names the first frame after
+  every move. `session.json` marks that frame with `"mount_move": "recenter"`
+  (or `"calibrate"`).
+
+This changes a principle stated for the manual **Center target** button: a
+background plate solve does not normally move the telescope. Leave it off unless
+you will watch the first corrections.
+
 ARGOS does not calibrate raw lights with darks, flats or bias frames during this
 quick-look identification/measurement path. Keep all raw calibration frames and
 perform the final calibrated reduction independently.

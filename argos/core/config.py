@@ -96,6 +96,20 @@ _DEFAULTS: dict[str, Any] = {
         "live_resolve_arcmin": 2,  # re-solve once the mount moves this far
         "live_timeout_s": 25,  # bound the live solve so the cadence never stalls
     },
+    # Opt-in re-centering between sequence frames (argos.core.imaging.recenter).
+    # The target's drift is measured on every photometry frame through the
+    # tracked WCS; the mount is nudged with MoveAxis between exposures only.
+    "recenter": {
+        "mode": "off",  # "off" | "threshold" | "every_n"
+        "threshold_px": 20.0,  # threshold mode: correct once drift exceeds this (green px)
+        "every_n": 30,  # every_n mode: correct every N measured frames ...
+        "deadband_px": 2.0,  # ... unless the drift is below this
+        "rate_deg_s": 0.05,  # MoveAxis rate for calibration and corrections
+        "calibration_pulse_s": 1.0,  # one pulse per axis to measure the mount's response
+        "max_pulse_s": 5.0,  # longest single correction pulse per axis
+        "max_step_px": 60.0,  # largest correction applied at once
+        "settle_s": 3.0,  # wait after a move before the next exposure
+    },
     # VSX/VSP variable-star catalog cone search (notes/photometry_plan.md §5).
     "catalog": {
         "mag_limit": 15.0,

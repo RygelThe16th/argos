@@ -127,3 +127,130 @@ def test_manual_references_breaking_the_rules_are_kept_with_a_warning(qapp, tmp_
         TargetStar(role=ROLE_TARGET, ra_deg=33.05875, dec_deg=44.65944, name="GZ And")
     )
     assert any("000-BPM-472" in text for level, text in logs if level == "WARN")
+
+
+# ---------------------------------------------------------------------------
+# Re-centering plumbing (recenter.*)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingSequence:
+    def __init__(self):
+        self.requests = []
+
+    def request_move(self, request):
+        self.requests.append(request)
+
+
+class _ShiftWCS:
+    """Target projects to a settable pixel position."""
+
+    def __init__(self, xy):
+        self.xy = xy
+
+    def world_to_pixel_deg(self, ra, dec):
+        return self.xy
+
+
+class _Tracker:
+    anchors_used = 3
+
+    def __init__(self):
+        self.shifts = []
+
+    def shift_by(self, dx, dy):
+        self.shifts.append((dx, dy))
+
+
+def _star_plane(shift=(0.0, 0.0), shape=(200, 260)):
+    rng = np.random.default_rng(7)
+    h, w = shape
+    yy, xx = np.mgrid[0:h, 0:w]
+    img = np.full(shape, 50.0)
+    for x, y in zip(rng.uniform(20, w - 20, 50), rng.uniform(20, h - 20, 50)):
+        img += 1500 * np.exp(-((xx - x - shift[0]) ** 2 + (yy - y - shift[1]) ** 2) / 3.0)
+    return img + rng.normal(0, 2, shape)
+
+
+def _recenter_engine(tmp_path, **recenter):
+    from argos.core.catalog.targets import TargetSet, TargetStar
+
+    defaults = dict(_DEFAULTS)
+    defaults["recenter"] = dict(_DEFAULTS["recenter"], **recenter)
+    cfg = Config(dict(defaults, sessions_path=str(tmp_path)))
+    engine = AcquisitionEngine(cfg, DeviceSession(cfg))
+    logs = []
+    engine.log_message.connect(lambda level, msg: logs.append((level, msg)))
+    engine._sequence = _RecordingSequence()
+    engine._tracker = _Tracker()
+    tset = TargetSet(object_name="X", stars=[TargetStar("target", 10.0, 20.0, auid="A")])
+    return engine, tset, logs
+
+
+def test_recenter_is_off_by_default(qapp, tmp_path):
+    engine, _, logs = _recenter_engine(tmp_path)
+    engine._start_recenter()
+    assert engine._recenter is None and logs == []
+
+
+def test_recenter_threshold_requests_calibration_from_engine(qapp, tmp_path):
+    engine, tset, logs = _recenter_engine(tmp_path, mode="threshold", threshold_px=10.0)
+    engine._start_recenter()
+    assert any("Recenter on" in m for _, m in logs)
+    green = _star_plane()
+    engine._recenter_observe(green, _ShiftWCS((100.0, 80.0)), tset)
+    engine._recenter_observe(green, _ShiftWCS((105.0, 80.0)), tset)
+    assert engine._sequence.requests == []
+    engine._recenter_observe(green, _ShiftWCS((112.0, 80.0)), tset)
+    assert [r.kind for r in engine._sequence.requests] == ["calibrate"]
+    assert any("queued for after the current exposure" in m for _, m in logs)
+
+
+def test_recenter_target_change_resets_reference(qapp, tmp_path):
+    from argos.core.catalog.targets import TargetSet, TargetStar
+
+    engine, tset, _ = _recenter_engine(tmp_path, mode="threshold", threshold_px=10.0)
+    engine._start_recenter()
+    green = _star_plane()
+    engine._recenter_observe(green, _ShiftWCS((100.0, 80.0)), tset)
+    other = TargetSet(object_name="X", stars=[TargetStar("target", 11.0, 21.0, auid="B")])
+    engine._recenter_observe(green, _ShiftWCS((400.0, 300.0)), other)
+    assert engine._sequence.requests == []
+    assert engine._recenter.reference == (400.0, 300.0)
+
+
+def test_recenter_nudge_feeds_measured_shift_to_tracker(qapp, tmp_path):
+    engine, tset, logs = _recenter_engine(tmp_path, mode="threshold", threshold_px=10.0)
+    engine._start_recenter()
+    before = _star_plane()
+    engine._recenter_observe(before, _ShiftWCS((100.0, 80.0)), tset)
+    engine._recenter_observe(before, _ShiftWCS((115.0, 80.0)), tset)  # → calibrate axis 0
+    engine._on_mount_nudged(
+        "calibrate", {"durations_s": (1.0, 0.0), "rate_deg_s": 0.05, "next_frame": 3}
+    )
+    assert engine._astrometry._rebase_mount
+    assert any("frame #3 is the first after the move" in m for _, m in logs)
+    engine._recenter_account_move(_star_plane(shift=(-12.0, 3.0)))
+    ((dx, dy),) = engine._tracker.shifts
+    assert dx == pytest.approx(-12.0, abs=0.3) and dy == pytest.approx(3.0, abs=0.3)
+    assert any("calibration axis 0" in m for _, m in logs)
+
+
+def test_recenter_skipped_move_unblocks(qapp, tmp_path):
+    engine, tset, logs = _recenter_engine(tmp_path, mode="threshold", threshold_px=10.0)
+    engine._start_recenter()
+    green = _star_plane()
+    engine._recenter_observe(green, _ShiftWCS((100.0, 80.0)), tset)
+    engine._recenter_observe(green, _ShiftWCS((115.0, 80.0)), tset)
+    assert engine._recenter.awaiting_move
+    engine._on_mount_nudged("calibrate", {"skipped": "no mount", "next_frame": 3})
+    assert not engine._recenter.awaiting_move
+    assert any(level == "WARN" and "not made" in m for level, m in logs)
+
+
+def test_dither_nudge_ignored_when_recenter_off(qapp, tmp_path):
+    engine, _, _ = _recenter_engine(tmp_path)
+    engine._start_recenter()
+    engine._on_mount_nudged("dither", {"durations_s": (1.0, -1.0), "next_frame": 6})
+    assert engine._recenter_post_move is None
+    assert not engine._astrometry._rebase_mount

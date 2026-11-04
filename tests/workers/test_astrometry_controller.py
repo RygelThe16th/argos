@@ -82,3 +82,15 @@ def test_on_new_frame_noop_when_not_armed(qapp) -> None:
     # Not armed → never touches the (None) raw frame, so no crash.
     c = AstrometryController(_cfg({}))
     c.on_new_frame(None, (10, 10))  # auto off → returns immediately
+
+
+def test_internal_move_rebases_mount_check_instead_of_clearing(qapp) -> None:
+    ctrl = AstrometryController(lambda key, default=None: default)
+    ctrl._wcs = object()
+    ctrl._last_solve_radec = (3.0, 41.0)
+    ctrl.note_internal_move()
+    # The mount now reports a pointing 3′ away: our own move, not a slew.
+    assert not ctrl.mount_moved_since_solution((3.0, 41.05))
+    assert ctrl._last_solve_radec == (3.0, 41.05)
+    # A later external move is still detected.
+    assert ctrl.mount_moved_since_solution((3.0, 41.2))
