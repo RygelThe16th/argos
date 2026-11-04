@@ -152,6 +152,10 @@ _DEFAULTS: dict[str, Any] = {
         # residuals and differential tracking error. A smaller, validated
         # ensemble is preferable to filling a requested count with remote stars.
         "comparison_max_separation_arcmin": 25.0,
+        # Reference stars this close (green px) to a frame edge, beyond the
+        # background annulus, are not proposed: unguided tracking drifts the
+        # field by roughly 90 green px per hour on a Seestar S30 Pro.
+        "comparison_edge_margin_px": 100.0,
         "comparison_validation_min_points": 10,
         "comparison_validation_max_scatter_mag": 0.10,
         "comparison_validation_max_formal_error_mag": 0.10,

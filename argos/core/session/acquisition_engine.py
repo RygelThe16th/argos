@@ -34,7 +34,11 @@ import numpy as np
 from PyQt6.QtCore import QObject, QRunnable, QThreadPool, pyqtSignal, pyqtSlot
 
 from argos import SOFTWARE_ID
-from argos.core.catalog.photometry import ComparisonQuality, auto_comparison_stars
+from argos.core.catalog.photometry import (
+    ComparisonQuality,
+    field_placement,
+    select_comparison_stars,
+)
 from argos.core.catalog.targets import (
     ROLE_CHECK,
     ROLE_COMPARISON,
@@ -1026,6 +1030,7 @@ class AcquisitionEngine(QObject):
         tset.set_role(star)
         if star.role == ROLE_TARGET:
             self._auto_select_comparisons(tset, star)
+        self._warn_reference_placement(tset, star)
         self._save_target_set(tset)
         self._reset_tracker()  # the anchor constellation changed
         self.targets_changed.emit(tset)
@@ -1100,7 +1105,8 @@ class AcquisitionEngine(QObject):
         min_snr = float(self._cfg("photometry.comparison_min_snr", 10.0))
         max_delta = float(self._cfg("photometry.comparison_max_delta_mag", 1.5))
         max_separation = float(self._cfg("photometry.comparison_max_separation_arcmin", 25.0))
-        picks = auto_comparison_stars(
+        min_separation_px, edge_margin_px = self.reference_placement_limits()
+        selection = select_comparison_stars(
             target.ra_deg,
             target.dec_deg,
             self._comparisons,
@@ -1112,7 +1118,15 @@ class AcquisitionEngine(QObject):
             min_snr=min_snr,
             max_delta_inst_mag=max_delta,
             max_separation_arcmin=max_separation,
+            min_separation_px=min_separation_px,
+            edge_margin_px=edge_margin_px,
+            occupied_radec=tuple((s.auid or s.key(), s.ra_deg, s.dec_deg) for s in existing),
         )
+        for exclusion in selection.excluded:
+            self.log_message.emit(
+                "INFO", f"Photometry: comparison excluded — {exclusion.describe()}"
+            )
+        picks = selection.picks
 
         # A manual click and its VSP record use different keys (position vs
         # AUID).  Keep a single physical star in the target set even in that
@@ -1156,6 +1170,85 @@ class AcquisitionEngine(QObject):
                 f"distance ≤ {max_separation:g}′).",
             )
         return len(picks)
+
+    def reference_placement_limits(self) -> tuple[float, float]:
+        """Green-px limits for reference stars: blend distance, edge distance.
+
+        A reference closer to the target (or to another reference) than the
+        background annulus' outer radius plus its own aperture radius shares
+        an aperture or annulus with it. A reference closer to a frame edge
+        than the outer radius plus the configured drift allowance leaves the
+        field as the mount drifts.
+
+        Same radii as :meth:`photometry_geometry`, without its gain lookup
+        (radii do not depend on it, and a target may be chosen before a
+        camera is configured).
+        """
+        params = PhotometryParams.from_config(self._cfg)
+        r_ap = params.aperture_px(self._phot_fwhm or self._last_fwhm)
+        r_out = max(params.annulus_out_px, max(params.annulus_in_px, r_ap + 1.0) + 2.0)
+        drift = max(0.0, float(self._cfg("photometry.comparison_edge_margin_px", 100.0)))
+        return r_out + r_ap, r_out + drift
+
+    def _warn_reference_placement(self, tset: TargetSet, star: TargetStar) -> None:
+        """Warn when a comparison/check star breaks the automatic-selection rules.
+
+        The observer's choice is kept — only the automatic proposal excludes
+        stars — but a reference blended with the target, about to drift out
+        of the frame, or catalogued as a variable is worth a visible warning.
+        Assigning a new target re-checks every reference against it.
+        """
+        targets = tset.by_role(ROLE_TARGET)
+        if not targets:
+            return
+        target = targets[0]
+        if star.role == ROLE_TARGET:
+            references = [
+                s
+                for s in tset.stars
+                if s.role in (ROLE_COMPARISON, ROLE_CHECK) and s.source != "vsp_auto"
+            ]
+        elif star.role in (ROLE_COMPARISON, ROLE_CHECK):
+            references = [star]
+        else:
+            return
+        wcs = self.tracked_wcs()
+        min_separation_px, edge_margin_px = self.reference_placement_limits()
+        for ref in references:
+            problems = []
+            if ref.source == "vsx":
+                problems.append("it is a catalogued variable star (VSX)")
+            placement = field_placement(
+                target.ra_deg,
+                target.dec_deg,
+                ref.ra_deg,
+                ref.dec_deg,
+                wcs=wcs,
+                green_shape=self._green_shape,
+            )
+            if (
+                placement.target_distance_px is not None
+                and placement.target_distance_px < min_separation_px
+            ):
+                problems.append(
+                    f"it is {placement.separation_arcsec:.0f}″ "
+                    f"({placement.target_distance_px:.1f} px) from the target, inside the "
+                    f"{min_separation_px:.0f} px aperture + annulus"
+                )
+            if wcs is not None and self._green_shape is not None:
+                edge = placement.edge_distance_px
+                if edge is None:
+                    problems.append("it is outside the current frame")
+                elif edge < edge_margin_px:
+                    problems.append(
+                        f"it is {edge:.0f} px from the frame edge "
+                        f"(< {edge_margin_px:.0f} px edge margin)"
+                    )
+            if problems:
+                self.log_message.emit(
+                    "WARN",
+                    f"Photometry: {ref.role} {ref.display_name} — " + "; ".join(problems),
+                )
 
     def _pilot_comparison_quality(
         self, target: TargetStar
