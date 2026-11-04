@@ -467,7 +467,23 @@ pilot frame and must pass every gate:
 - **instrumental** magnitude within 1.5 mag of the target's — measured on the
   same frame, not compared through catalogue magnitudes, so the gate is about
   landing in the same part of the detector's response;
-- separation under 25 arcmin.
+- separation under 25 arcmin;
+- **not blended:** farther (in green pixels, on the current WCS) from the
+  target — and from every other comparison — than the background annulus'
+  outer radius plus the aperture radius. Closer, the two stars share an
+  aperture or annulus: the comparison cannot be measured on its own and it
+  brightens the target. A blend also *looks* ideal on the pilot frame (the
+  target's own SNR and instrumental magnitude), which is why this is a hard
+  gate rather than part of the score;
+- **not near a frame edge:** farther from the nearest edge than the outer
+  radius plus `photometry.comparison_edge_margin_px` (100 green px by
+  default — roughly one hour of unguided drift on a Seestar S30 Pro), so the
+  ensemble survives the drift of a long run.
+
+Every candidate rejected by these two positional gates is named in the
+Activity log with its distance and the limit it broke. The Photometry
+window's comparison table shows, for each selected star, its separation
+from the target and its current distance to the frame edge.
 
 The separation limit is deliberate — across a very wide raw field, remote
 references are vulnerable to flat-field residuals and differential tracking
@@ -491,6 +507,10 @@ unavailable the code falls back to nearest-first instead.
 A manually clicked star is never replaced by this proposal. It is kept, but
 because it has no AUID and no catalogue magnitude it cannot contribute a zero
 point, so ARGOS complements it rather than leaving the target unusable.
+
+Manual comparison and check stars are never excluded either, but ARGOS warns
+in the Activity log when one breaks the positional gates above or is a
+catalogued (VSX) variable star.
 
 ## 5. The run-level systematic floor
 
@@ -818,6 +838,7 @@ JSON config. The defaults below are those of 0.4.2.
 | `photometry.comparison_min_snr` | `10.0` | pilot-frame SNR gate — §4.5 |
 | `photometry.comparison_max_delta_mag` | `1.5` | instrumental-magnitude gate, in mag — §4.5 |
 | `photometry.comparison_max_separation_arcmin` | `25.0` | how far a reference may sit from the target — §4.5 |
+| `photometry.comparison_edge_margin_px` | `100.0` | drift allowance beyond the annulus for automatic references near a frame edge, in green px — §4.5 |
 | `photometry.comparison_validation_min_points` | `10` | points needed before a comparison can be judged — §6 |
 | `photometry.comparison_validation_max_scatter_mag` | `0.10` | above this scatter, *Unstable* — §6 |
 | `photometry.comparison_validation_max_formal_error_mag` | `0.10` | above this median error, *Noisy* — §6 |

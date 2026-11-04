@@ -9,6 +9,7 @@ can see and prune the ensemble that forms the differential zero-point.
 from __future__ import annotations
 
 from PyQt6.QtCore import QSignalBlocker, pyqtSignal
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -26,8 +27,47 @@ from PyQt6.QtWidgets import (
 from argos.core.imaging.platesolve import format_dec_dms, format_ra_hms
 from argos.ui import theme
 
-_ENSEMBLE_HEADERS = ("Name", "AUID", "RA (J2000)", "Dec (J2000)", "Catalogue mags", "Source")
+_ENSEMBLE_HEADERS = (
+    "Name",
+    "AUID",
+    "RA (J2000)",
+    "Dec (J2000)",
+    "Catalogue mags",
+    "Source",
+    "From target",
+    "To edge (px)",
+)
+_PLACEMENT_COLUMNS = (
+    _ENSEMBLE_HEADERS.index("From target"),
+    _ENSEMBLE_HEADERS.index("To edge (px)"),
+)
 _QUALITY_HEADERS = ("Samples", "Scatter (mag)", "Formal error (mag)", "Live status")
+
+
+def _placement_values(placement, limits: tuple[float, float] | None) -> tuple:
+    """Format separation from the target and distance to the frame edge.
+
+    Returns ``(separation_text, edge_text, warning)`` where ``warning`` names
+    the broken automatic-selection rule, if any, for the row tooltip.
+    """
+    if placement is None:
+        return "—", "—", ""
+    sep = placement.separation_arcsec
+    sep_text = f"{sep:.0f}″" if sep < 120.0 else f"{sep / 60.0:.1f}′"
+    edge = placement.edge_distance_px
+    on_wcs = placement.target_distance_px is not None
+    if edge is not None:
+        edge_text = f"{edge:.0f}"
+    else:
+        edge_text = "outside" if on_wcs else "—"
+    warnings = []
+    if limits is not None and on_wcs:
+        min_separation_px, edge_margin_px = limits
+        if placement.target_distance_px < min_separation_px:
+            warnings.append(f"inside the target's aperture + annulus ({min_separation_px:.0f} px)")
+        if edge is None or edge < edge_margin_px:
+            warnings.append(f"within the {edge_margin_px:.0f} px edge margin")
+    return sep_text, edge_text, "; ".join(warnings)
 
 
 def _quality_values(entry: dict | None) -> tuple[str, str, str, str]:
@@ -129,6 +169,8 @@ class ComparisonEnsembleTable(QWidget):
         self._keys: list[str] = []
         self._stars: list = []
         self._quality_by_key: dict[str, dict] = {}
+        self._placement_by_key: dict[str, object] = {}
+        self._placement_limits: tuple[float, float] | None = None
 
     def set_auto_count(self, count: int) -> None:
         """Synchronise the user preference without emitting a new request."""
@@ -154,10 +196,12 @@ class ComparisonEnsembleTable(QWidget):
                 mags,
                 s.source or "manual",
             )
+            values += ("—", "—")  # placement, filled by _show_placement
             quality = self._quality_by_key.get(s.auid or s.display_name)
             values += _quality_values(quality)
             for c, v in enumerate(values):
                 self._table.setItem(r, c, QTableWidgetItem(v))
+            self._show_placement(r, s.key())
         del blocker
         calibrated = [s for s in comps if s.mags]
         manual = len(comps) - len(calibrated)
@@ -171,6 +215,34 @@ class ComparisonEnsembleTable(QWidget):
             )
         else:
             self._count.setText(f"{len(calibrated)} calibrated comparison star(s)")
+
+    def set_placements(
+        self, placements: dict | None, limits: tuple[float, float] | None = None
+    ) -> None:
+        """Show each star's separation from the target and distance to the edge.
+
+        ``placements`` maps ``TargetStar.key()`` to a
+        :class:`~argos.core.catalog.photometry.FieldPlacement` measured on the
+        current WCS; ``limits`` is ``(min_separation_px, edge_margin_px)``.
+        """
+        self._placement_by_key = dict(placements or {})
+        self._placement_limits = limits
+        # Refreshed on every re-projection: update the two cells in place so
+        # the observer's row selection survives.
+        for row, key in enumerate(self._keys):
+            self._show_placement(row, key)
+
+    def _show_placement(self, row: int, key: str) -> None:
+        sep_text, edge_text, warning = _placement_values(
+            self._placement_by_key.get(key), self._placement_limits
+        )
+        for column, text in zip(_PLACEMENT_COLUMNS, (sep_text, edge_text)):
+            item = QTableWidgetItem(text)
+            if warning:
+                item.setToolTip(f"Breaks the automatic-selection rule: {warning}")
+                if theme.WARNING:
+                    item.setForeground(QColor(theme.WARNING))
+            self._table.setItem(row, column, item)
 
     def set_quality_report(self, report: dict | None) -> None:
         """Show the latest non-destructive leave-one-out assessment."""

@@ -74,9 +74,9 @@ from argos.core.session.types import (
 )
 from argos.core.catalog import PointSourceIdentity, cached_exoplanet_hosts_in_cone
 from argos.core.catalog.offline import essential_catalogue_objects
-from argos.core.catalog.photometry import separation_arcmin
+from argos.core.catalog.photometry import field_placement, separation_arcmin
 from argos.core.catalog.object_resolver import is_variable_object_type
-from argos.core.catalog.targets import TargetStar
+from argos.core.catalog.targets import ROLE_TARGET, TargetStar
 from argos.core.hardware import active as hardware
 from argos.core.imaging import sensor_models
 from argos.core.imaging.astrometry_session import field_geometry, project_points
@@ -1750,6 +1750,7 @@ class ImagingPage(QWidget):
             pts.append((p[0], p[1], s.display_name, s.role, self._target_tooltip(s)))
         self._viewer.set_target_markers(pts, gs)
         self._arm_overlay("targets", bool(pts), self._viewer.set_target_enabled)
+        self._refresh_comparison_placements()
         labels_available = bool(
             pts
             or self._var_green
@@ -2197,7 +2198,38 @@ class ImagingPage(QWidget):
 
     def _refresh_target_table(self) -> None:
         if self._photometry_window is not None:
+            self._refresh_comparison_placements()
             self._photometry_window.set_targets(self._engine.target_set().stars)
+
+    def _refresh_comparison_placements(self) -> None:
+        """Show each reference's separation from the target and edge distance.
+
+        Measured on the tracked WCS, so the edge distance follows the drift
+        of the field during a run.
+        """
+        if self._photometry_window is None:
+            return
+        tset = self._engine.target_set()
+        targets = tset.by_role(ROLE_TARGET)
+        placements = {}
+        if targets:
+            target = targets[0]
+            wcs = self._overlay_wcs()
+            placements = {
+                star.key(): field_placement(
+                    target.ra_deg,
+                    target.dec_deg,
+                    star.ra_deg,
+                    star.dec_deg,
+                    wcs=wcs,
+                    green_shape=self._green_shape,
+                )
+                for star in tset.stars
+                if star.role != ROLE_TARGET
+            }
+        self._photometry_window.comparisons.set_placements(
+            placements, self._engine.reference_placement_limits()
+        )
 
     def _refresh_variable_table(self) -> None:
         """Feed the Variables tab: one row per cached VSX variable, in order."""

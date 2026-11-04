@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from argos.core.catalog import (
     Band,
     ComparisonQuality,
@@ -9,8 +11,15 @@ from argos.core.catalog import (
     VariableStar,
     auto_comparison_stars,
     comparisons_for_variable,
+    field_placement,
     rank_comparisons,
+    select_comparison_stars,
     separation_arcmin,
+)
+from argos.core.catalog.photometry import (
+    EXCLUDED_NEAR_COMPARISON,
+    EXCLUDED_NEAR_EDGE,
+    EXCLUDED_NEAR_TARGET,
 )
 from argos.core.catalog.targets import ROLE_COMPARISON
 
@@ -156,3 +165,148 @@ def test_auto_comparisons_reject_remote_stars_even_when_bright() -> None:
         count=5,
     )
     assert [star.auid for star in picks] == ["CLOSE"]
+
+
+# ── Positional gates (blends and frame edges) ────────────────────────────
+#
+# GZ And, 2026-11-01: 000-BPM-472 sits 11″ from the target, well inside the
+# 5 px aperture + 12 px annulus at ≈8″/green px, yet it was auto-selected.
+# Measured on the pilot frame, a star blended with the target looks ideal —
+# the target's own SNR and instrumental magnitude — so the quality score
+# alone ranks it first.
+
+GZ_AND = (33.05875, 44.65944)
+GZ_AND_COMPS = [
+    _comp("000-BPM-472", 33.057416666666676, 44.656416666666665, 11.848),
+    _comp("000-BPM-471", 33.14383333333334, 44.77311111111111, 11.301),
+    _comp("000-BJX-815", 33.92358333333333, 44.585, 9.926),
+]
+
+
+class _TangentWCS:
+    """Small-field tangent-plane approximation centred on the target."""
+
+    def __init__(
+        self, ra0: float, dec0: float, scale_arcsec: float = 8.0, centre=(960.0, 540.0)
+    ) -> None:
+        self.ra0, self.dec0, self.scale, self.centre = ra0, dec0, scale_arcsec, centre
+
+    def world_to_pixel_deg(self, ra_deg: float, dec_deg: float):
+        dx = (ra_deg - self.ra0) * math.cos(math.radians(self.dec0)) * 3600.0 / self.scale
+        dy = (dec_deg - self.dec0) * 3600.0 / self.scale
+        return self.centre[0] + dx, self.centre[1] + dy
+
+
+def test_blended_comparison_is_excluded_even_with_the_best_pilot_quality() -> None:
+    quality = {
+        # Blended with the target: same SNR, same instrumental magnitude.
+        "000-BPM-472": ComparisonQuality(snr=180.0, inst_mag=-9.30),
+        "000-BPM-471": ComparisonQuality(snr=150.0, inst_mag=-9.75),
+        "000-BJX-815": ComparisonQuality(snr=400.0, inst_mag=-11.20),
+    }
+    selection = select_comparison_stars(
+        *GZ_AND,
+        GZ_AND_COMPS,
+        wcs=_TangentWCS(*GZ_AND),
+        green_shape=(1080, 1920),
+        candidate_quality=quality,
+        target_inst_mag=-9.30,
+        min_snr=10.0,
+        max_delta_inst_mag=1.5,
+        min_separation_px=17.0,
+        edge_margin_px=112.0,
+    )
+    assert [p.auid for p in selection.picks] == ["000-BPM-471"]
+    [blend] = selection.excluded
+    assert blend.auid == "000-BPM-472" and blend.reason == EXCLUDED_NEAR_TARGET
+    assert blend.distance_px < 2.0 and blend.limit_px == 17.0
+    assert "000-BPM-472" in blend.describe() and "target" in blend.describe()
+
+
+def test_without_positional_limits_the_blend_is_still_chosen() -> None:
+    """Documents the original GZ And behaviour the new gate prevents."""
+    quality = {
+        "000-BPM-472": ComparisonQuality(snr=180.0, inst_mag=-9.30),
+        "000-BPM-471": ComparisonQuality(snr=150.0, inst_mag=-9.75),
+    }
+    picks = auto_comparison_stars(
+        *GZ_AND,
+        GZ_AND_COMPS[:2],
+        wcs=_TangentWCS(*GZ_AND),
+        green_shape=(1080, 1920),
+        candidate_quality=quality,
+        target_inst_mag=-9.30,
+        min_snr=10.0,
+        max_delta_inst_mag=1.5,
+    )
+    assert picks[0].auid == "000-BPM-472"
+
+
+def test_candidates_near_the_frame_edge_are_excluded() -> None:
+    # Target at the centre of a 1920×1080 frame at 100 px/°: EDGE lands 50 px
+    # from the right edge, INNER 300 px from it.
+    edge = _comp("EDGE", 18.70, 5.40, 12.0)  # x = 1870 px
+    inner = _comp("INNER", 16.20, 5.40, 12.0)  # x = 1620 px
+    selection = select_comparison_stars(
+        9.60,
+        5.40,
+        [edge, inner],
+        wcs=_GridWCS(),
+        green_shape=(1080, 1920),
+        edge_margin_px=112.0,
+    )
+    assert [p.auid for p in selection.picks] == ["INNER"]
+    [excluded] = selection.excluded
+    assert excluded.reason == EXCLUDED_NEAR_EDGE and excluded.auid == "EDGE"
+    assert round(excluded.distance_px) == 50
+    assert "frame edge" in excluded.describe()
+
+
+def test_comparisons_must_not_blend_with_each_other() -> None:
+    # A and B are 5 px apart; the better-ranked (closer) one wins.
+    a = _comp("A", 9.00, 5.40, 12.0)
+    b = _comp("B", 8.95, 5.40, 12.0)
+    c = _comp("C", 8.00, 5.40, 12.0)
+    selection = select_comparison_stars(
+        9.60, 5.40, [a, b, c], wcs=_GridWCS(), green_shape=(1080, 1920), min_separation_px=17.0
+    )
+    assert [p.auid for p in selection.picks] == ["A", "C"]
+    [excluded] = selection.excluded
+    assert excluded.reason == EXCLUDED_NEAR_COMPARISON
+    assert (excluded.auid, excluded.other) == ("B", "A")
+
+
+def test_existing_references_claim_their_place_but_are_not_self_excluded() -> None:
+    a = _comp("A", 9.00, 5.40, 12.0)
+    b = _comp("B", 8.95, 5.40, 12.0)
+    selection = select_comparison_stars(
+        9.60,
+        5.40,
+        [a, b],
+        wcs=_GridWCS(),
+        green_shape=(1080, 1920),
+        min_separation_px=17.0,
+        occupied_radec=(("manual", 8.95, 5.40),),  # the observer already has B
+    )
+    # B is the occupied star itself (left to the caller's de-duplication);
+    # A is 5 px from it and is rejected.
+    assert [p.auid for p in selection.picks] == ["B"]
+    assert [(e.auid, e.other) for e in selection.excluded] == [("A", "manual")]
+
+
+def test_field_placement_reports_separation_and_edge_distance() -> None:
+    placement = field_placement(
+        *GZ_AND,
+        33.057416666666676,
+        44.656416666666665,
+        wcs=_TangentWCS(*GZ_AND),
+        green_shape=(1080, 1920),
+    )
+    assert 10.0 < placement.separation_arcsec < 13.0
+    assert placement.target_distance_px < 2.0
+    assert 535.0 < placement.edge_distance_px < 545.0  # the short axis
+    # Off-frame and WCS-less placements degrade to None.
+    off = field_placement(9.6, 5.4, 30.0, 5.4, wcs=_GridWCS(), green_shape=(1080, 1920))
+    assert off.edge_distance_px is None
+    bare = field_placement(9.6, 5.4, 9.7, 5.4)
+    assert bare.target_distance_px is None and bare.edge_distance_px is None

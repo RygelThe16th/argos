@@ -54,6 +54,34 @@ def test_marker_tooltip_accepts_pyqtgraph_keyword_arguments() -> None:
     assert _marker_tip(x=12.5, y=7.0, data="<source>") == "&lt;source&gt;"
 
 
+def test_comparison_table_shows_separation_and_edge_distance(qapp) -> None:
+    from argos.core.catalog.photometry import FieldPlacement
+    from argos.core.catalog.targets import TargetStar
+
+    near = TargetStar(role="comparison", ra_deg=33.0574, dec_deg=44.6564, auid="000-BPM-472")
+    good = TargetStar(role="comparison", ra_deg=33.1438, dec_deg=44.7731, auid="000-BPM-471")
+    table = ComparisonEnsembleTable()
+    try:
+        table.set_targets([near, good])
+        table._table.selectRow(1)
+        table.set_placements(
+            {
+                near.key(): FieldPlacement(11.4, 1.4, 538.0),
+                good.key(): FieldPlacement(463.5, 57.9, 60.0),
+            },
+            (17.0, 112.0),
+        )
+        cell = table._table.item
+        assert (cell(0, 6).text(), cell(0, 7).text()) == ("11″", "538")
+        assert (cell(1, 6).text(), cell(1, 7).text()) == ("7.7′", "60")
+        assert "aperture + annulus" in cell(0, 6).toolTip()
+        assert "edge margin" in cell(1, 7).toolTip()
+        assert table._table.currentRow() == 1  # a re-projection keeps the selection
+    finally:
+        table.close()
+        table.deleteLater()
+
+
 def test_field_filter_bar_keeps_zero_result_layers_clickable(qapp) -> None:
     bar = OverlayBar()
     try:
@@ -193,8 +221,8 @@ def test_comparison_table_surfaces_live_quality(qapp) -> None:
                 ]
             }
         )
-        assert table._table.item(0, 6).text() == "12"
-        assert table._table.item(0, 9).text() == "Stable"
+        assert table._table.item(0, 8).text() == "12"
+        assert table._table.item(0, 11).text() == "Stable"
     finally:
         table.close()
         table.deleteLater()

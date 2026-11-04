@@ -137,6 +137,23 @@ class PhotometrySetupPanel(QWidget):
             )
         )
         form.addRow("Reference-star maximum separation", self._comparison_distance)
+
+        self._comparison_edge = QDoubleSpinBox()
+        self._comparison_edge.setRange(0.0, 500.0)
+        self._comparison_edge.setDecimals(0)
+        self._comparison_edge.setSingleStep(10.0)
+        self._comparison_edge.setSuffix(" green px")
+        self._comparison_edge.setToolTip(
+            "Drift allowance beyond the background annulus. Automatic comparisons "
+            "closer than this to a frame edge are not proposed, so they stay in the "
+            "field while the mount drifts."
+        )
+        self._comparison_edge.valueChanged.connect(
+            lambda value: self.setting_changed.emit(
+                "photometry.comparison_edge_margin_px", float(value)
+            )
+        )
+        form.addRow("Reference-star edge margin", self._comparison_edge)
         root.addLayout(form)
 
         self._effective = QLabel("Current live geometry: waiting for a measured FWHM")
@@ -178,6 +195,10 @@ class PhotometrySetupPanel(QWidget):
             (
                 self._comparison_distance,
                 float(cfg("photometry.comparison_max_separation_arcmin", 25.0)),
+            ),
+            (
+                self._comparison_edge,
+                float(cfg("photometry.comparison_edge_margin_px", 100.0)),
             ),
         )
         for widget, value in values:
