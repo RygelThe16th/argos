@@ -7,15 +7,18 @@ engine wiring; frames, the log and live light curve stay on Capture.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from PyQt6.QtCore import pyqtSignal, pyqtSlot
-from PyQt6.QtWidgets import QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QMessageBox, QVBoxLayout, QWidget
 
 from argos.ui import design
 from argos.ui.widgets.sequence_panel import SequencePanel
 from argos.core.catalog.object_resolver import ResolvedObject
 from argos.core.exoplanet.transit import make_transit_sequence, predict_next_transit
+from argos.core.imaging import start_condition as sc
+from argos.core.session.scheduled_start import ScheduledStart
 from argos.core.photometry.airmass import bjd_tdb, julian_date, utc_from_bjd_tdb
 from argos.workers.exoplanet_worker import ExoplanetLookupWorker
 from argos.workers.object_resolver_worker import ObjectResolverWorker
@@ -53,10 +56,15 @@ class SequencerPage(QWidget):
         self.panel.start_requested.connect(self._on_start)
         self.panel.pause_requested.connect(engine.pause_sequence)
         self.panel.resume_requested.connect(engine.resume_sequence_run)
-        self.panel.stop_requested.connect(engine.stop_sequence)
+        self.panel.stop_requested.connect(self._on_stop)
         self.panel.object_lookup_requested.connect(self._lookup_object)
         self.panel.exoplanet_lookup_requested.connect(self._lookup_exoplanet)
         self.panel.transit_plan_requested.connect(self._prepare_transit_plan)
+        # Scheduled start: holds a frozen plan until its time/altitude.
+        self._scheduler = ScheduledStart(engine, session, self)
+        self._scheduler.active.connect(self.panel.set_waiting)
+        self._scheduler.status.connect(self.panel.set_status)
+        self._scheduler.ended.connect(self._on_schedule_ended)
         # Engine → run feedback.
         engine.sequence_running.connect(self.panel.set_running)
         engine.sequence_paused.connect(self.panel.set_paused)
@@ -71,10 +79,70 @@ class SequencerPage(QWidget):
     # ------------------------------------------------------------------
 
     def _on_start(self, plan) -> None:
+        cond = self._start_condition()
+        if not cond.immediate:
+            self._arm_scheduled_start(plan, cond)
+            return
+        self._start_now(plan)
+
+    def _start_now(self, plan) -> None:
         if not self._engine.start_sequence(plan):
             # Refused (no camera / already running / AF owns the camera) —
             # the reason is logged; snap the panel button back.
             self.panel.set_running(False)
+
+    def _start_condition(self) -> sc.StartCondition:
+        """Panel options with the explicitly saved site (never the 0/0 default)."""
+        cond = self.panel.start_condition()
+        if cond.target is not None:
+            site = self._site_coordinates()
+            cond = replace(
+                cond,
+                target=replace(
+                    cond.target,
+                    lat_deg=site[0] if site else None,
+                    lon_deg=site[1] if site else None,
+                ),
+            )
+        return cond
+
+    def _arm_scheduled_start(self, plan, cond: sc.StartCondition) -> None:
+        now = datetime.now().astimezone()
+        problem = sc.problem(cond, now)
+        if problem:
+            self.panel.set_status(problem)
+            return
+        if sc.is_past(cond, now):
+            local = cond.start_at.astimezone().strftime("%Y-%m-%d %H:%M")
+            if not self._confirm_start_now(local):
+                self.panel.set_status(f"Not started — {local} has already passed.")
+                return
+            cond = cond.now_instead()
+            if cond.immediate:
+                self._start_now(plan)
+                return
+        self._scheduler.arm(plan, cond)
+
+    def _confirm_start_now(self, local_time: str) -> bool:
+        answer = QMessageBox.question(
+            self,
+            "Start time has passed",
+            f"The start time {local_time} has already passed.\n\nStart the sequence now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _on_stop(self) -> None:
+        if self._scheduler.is_active:
+            self._scheduler.cancel()
+        else:
+            self._engine.stop_sequence()
+
+    @pyqtSlot(str, str)
+    def _on_schedule_ended(self, outcome: str, message: str) -> None:
+        if outcome != "started":
+            self.panel.set_status(message)
 
     def set_target_coordinates(self, name: str, ra_hours: float, dec_degrees: float) -> None:
         """Receive the shared Telescope target for the Plan visibility preview."""
@@ -280,6 +348,9 @@ class SequencerPage(QWidget):
         )
         self._show_transit_visibility(target, window, local_window)
         self.panel.load_plan(plan)
+        if local_window is not None:
+            # Offer the coverage start; the Start mode is left to the observer.
+            self.panel.set_scheduled_start_time(local_window[0])
         self.panel.set_status(
             f"Transit sequence prepared: {plan.steps[0].count} light frames at "
             f"{settings['cadence_s']:.1f}s cadence. Review the start time before running."
@@ -289,6 +360,7 @@ class SequencerPage(QWidget):
         self.panel.save_layout()
 
     def shutdown(self) -> None:
+        self._scheduler.cancel()
         if self._object_resolver_worker is not None:
             self._object_resolver_worker.wait(9000)  # resolver request timeout is 8 seconds
             self._object_resolver_worker = None

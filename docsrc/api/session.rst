@@ -22,6 +22,11 @@
    :undoc-members:
    :show-inheritance:
 
+.. automodule:: argos.core.session.scheduled_start
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 .. automodule:: argos.core.session.review
    :members:
    :undoc-members:
