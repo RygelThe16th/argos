@@ -570,17 +570,20 @@ class DeviceSession(QObject):
     # Mount commands
     # ------------------------------------------------------------------
 
-    def goto(self, ra_h: float, dec_d: float) -> None:
+    def goto(self, ra_h: float, dec_d: float) -> bool:
+        """Start a GoTo; True when the mount accepted it."""
         if not self._telescope:
-            return
+            return False
         try:
             self._telescope.set_tracking(True)
             self._telescope.slew_to(ra_h, dec_d)
             self._target_radec = (ra_h, dec_d)
             self.slewed.emit()  # the slew invalidates the previous solve
             self.log_message.emit("CMD", f"Slewing → RA {ra_h:.4f}h Dec {dec_d:+.4f}°")
+            return True
         except AlpacaError as exc:
             self.log_message.emit("ERROR", f"Goto: {exc}")
+            return False
 
     def sync_current(self) -> None:
         if not (self._telescope and self._last_position):

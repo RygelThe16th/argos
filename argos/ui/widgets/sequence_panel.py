@@ -18,12 +18,13 @@ import logging
 from pathlib import Path
 
 import pyqtgraph as pg
-from PyQt6.QtCore import QByteArray, QSize, Qt, QTimer, QStringListModel, pyqtSignal
+from PyQt6.QtCore import QByteArray, QDateTime, QSize, Qt, QTimer, QStringListModel, pyqtSignal
 from PyQt6.QtGui import QAction, QColor
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QCompleter,
+    QDateTimeEdit,
     QDoubleSpinBox,
     QFileDialog,
     QGridLayout,
@@ -50,6 +51,13 @@ from argos.core.imaging.sequencer import (
     plan_to_dict,
 )
 from argos.core.imaging.sky_geometry import upcoming_night_altitudes
+from argos.core.imaging.start_condition import (
+    START_ABOVE_ALTITUDE,
+    START_AT_TIME,
+    START_NOW,
+    StartCondition,
+    StartTarget,
+)
 from argos.core.catalog.exoplanets import cached_exoplanet_suggestions
 from argos.core.catalog.object_resolver import cached_object_suggestions
 from argos.ui import design, theme
@@ -190,6 +198,10 @@ class SequencePanel(QWidget):
         self._exposure_range = _DEFAULT_EXPOSURE_RANGE
         self._running = False
         self._paused = False
+        self._waiting = False
+        # Visibility target (name, ra_h, dec_d, lat, lon) — the GoTo / altitude
+        # start reference; None until a target is resolved.
+        self._start_target: tuple[str, float, float, float, float] | None = None
         self._active_row = -1
         self._device_states: dict[str, str] = {}
         self._build_ui()
@@ -463,6 +475,42 @@ class SequencePanel(QWidget):
         run_panel = QWidget()
         run_l = QVBoxLayout(run_panel)
         run_l.setContentsMargins(0, 0, 0, 0)
+        # When to start. "Now" is the historical behaviour; a time or an
+        # altitude holds the frozen plan until it is due (Stop cancels).
+        start_opts = QGridLayout()
+        start_opts.setHorizontalSpacing(design.SPACING_MD)
+        start_opts.setVerticalSpacing(design.SPACING_SM)
+        start_opts.setColumnStretch(1, 1)
+        start_opts.addWidget(design.MutedLabel("Start"), 0, 0)
+        self._start_mode = QComboBox()
+        self._start_mode.addItem("Now", START_NOW)
+        self._start_mode.addItem("At a local time", START_AT_TIME)
+        self._start_mode.addItem("When the target is above…", START_ABOVE_ALTITUDE)
+        self._start_mode.setToolTip("Hold the sequence until a time or a target altitude")
+        start_opts.addWidget(self._start_mode, 0, 1)
+        self._start_time = QDateTimeEdit()
+        self._start_time.setCalendarPopup(True)
+        self._start_time.setDisplayFormat("yyyy-MM-dd HH:mm")
+        self._start_time.setDateTime(QDateTime.currentDateTime().addSecs(3600))
+        self._start_time.setToolTip("Local time of this computer")
+        start_opts.addWidget(self._start_time, 1, 1)
+        self._start_alt = QDoubleSpinBox()
+        self._start_alt.setRange(0.0, 89.0)
+        self._start_alt.setDecimals(0)
+        self._start_alt.setValue(30.0)
+        self._start_alt.setSuffix("° altitude")
+        self._start_alt.setToolTip("Start once the Visibility target climbs above this altitude")
+        start_opts.addWidget(self._start_alt, 2, 1)
+        self._start_goto_chk = QCheckBox("GoTo the target at start")
+        self._start_goto_chk.setToolTip(
+            "Slew to the Visibility target, wait for the slew to finish, then expose. "
+            "If the GoTo fails the sequence does not start."
+        )
+        start_opts.addWidget(self._start_goto_chk, 3, 0, 1, 2)
+        run_l.addLayout(start_opts)
+        self._start_mode.currentIndexChanged.connect(self._sync_start_options)
+        self._sync_start_options()
+
         self._start_btn = design.SuccessButton("▶  Start sequence")
         self._start_btn.clicked.connect(self._on_start)
         self._pause_btn = design.SecondaryButton("⏸  Pause")
@@ -852,6 +900,7 @@ class SequencePanel(QWidget):
     ) -> None:
         """Update the visibility card from a Telescope catalogue resolution."""
         self.set_object_name(name)
+        self._set_start_target(name, ra_hours, dec_degrees, site_lat, site_lon)
         self._visibility_plot.set_target(name, ra_hours, dec_degrees, site_lat, site_lon)
 
     def set_transit_visibility(
@@ -867,6 +916,7 @@ class SequencePanel(QWidget):
         """Show the altitude curve for the transit night and shade its coverage."""
         midpoint = coverage_start + (coverage_end - coverage_start) / 2
         self.set_object_name(name)
+        self._set_start_target(name, ra_hours, dec_degrees, site_lat, site_lon)
         self._visibility_plot.set_target(
             name,
             ra_hours,
@@ -975,12 +1025,74 @@ class SequencePanel(QWidget):
             self._transit_filter_combo.setCurrentIndex(idx)
         self._transit_filter_combo.blockSignals(False)
 
+    # ------------------------------------------------------------------
+    # Scheduled start
+    # ------------------------------------------------------------------
+
+    def _set_start_target(self, name, ra_hours, dec_degrees, site_lat, site_lon) -> None:
+        self._start_target = (
+            str(name),
+            float(ra_hours),
+            float(dec_degrees),
+            float(site_lat),
+            float(site_lon),
+        )
+        self._sync_start_options()
+
+    def _sync_start_options(self, *_args) -> None:
+        mode = self._start_mode.currentData()
+        self._start_time.setVisible(mode == START_AT_TIME)
+        self._start_alt.setVisible(mode == START_ABOVE_ALTITUDE)
+        has_target = self._start_target is not None
+        self._start_goto_chk.setEnabled(has_target and not self._waiting)
+        if not has_target:
+            self._start_goto_chk.setChecked(False)
+            self._start_goto_chk.setToolTip("Find the target first (its coordinates are used)")
+        else:
+            self._start_goto_chk.setToolTip(
+                f"Slew to {self._start_target[0]}, wait for the slew to finish, then "
+                "expose. If the GoTo fails the sequence does not start."
+            )
+
+    def start_condition(self) -> StartCondition:
+        """The observer's start options (mode, time/altitude, GoTo)."""
+        target = None
+        if self._start_target is not None:
+            # The page substitutes the explicitly saved site (never 0/0).
+            name, ra, dec, lat, lon = self._start_target
+            target = StartTarget(name, ra, dec, lat, lon)
+        start_at = self._start_time.dateTime().toPyDateTime().astimezone()
+        return StartCondition(
+            mode=self._start_mode.currentData(),
+            start_at=start_at,
+            min_altitude_deg=float(self._start_alt.value()),
+            goto=self._start_goto_chk.isChecked(),
+            target=target,
+        )
+
+    def set_scheduled_start_time(self, when) -> None:
+        """Prefill the start time (e.g. a transit's coverage start); mode unchanged."""
+        local = when.astimezone()
+        self._start_time.setDateTime(QDateTime.fromSecsSinceEpoch(int(local.timestamp())))
+
+    def set_waiting(self, waiting: bool) -> None:
+        """A scheduled start holds the plan: lock editing, Stop cancels."""
+        self._waiting = waiting
+        self._start_btn.setEnabled(not waiting and not self._running)
+        self._stop_btn.setEnabled(waiting or self._running)
+        self._table.setEnabled(not waiting and not self._running)
+        for widget in (self._start_mode, self._start_time, self._start_alt):
+            widget.setEnabled(not waiting)
+        self._sync_start_options()
+        if not waiting and not self._running:
+            self.set_status("")
+
     def set_running(self, running: bool) -> None:
         self._running = running
-        self._start_btn.setEnabled(not running)
+        self._start_btn.setEnabled(not running and not self._waiting)
         self._pause_btn.setEnabled(running)
-        self._stop_btn.setEnabled(running)
-        self._table.setEnabled(not running)
+        self._stop_btn.setEnabled(running or self._waiting)
+        self._table.setEnabled(not running and not self._waiting)
         self._progress.setVisible(running)
         if not running:
             self.set_status("")

@@ -202,6 +202,20 @@ presets and run controls into movable panels; the step table stays in the centre
    **Presets** saves and reloads a plan as JSON.
 6. **Start sequence** begins the run. Pause finishes the current frame then
    holds; Stop ends the run.
+7. **Start** in **Sequence control** chooses when the run begins. The default,
+   *Now*, starts at once, as before. You can instead hold the plan until a
+   *local time* (date and time), or until the Visibility target climbs *above
+   an altitude*. While it waits the table is locked, the panel counts down, and
+   **Stop** cancels it with nothing exposed.
+   - A time that has already passed asks whether to start now.
+   - An altitude the target will not reach in the next 12 hours is refused up
+     front.
+   - *GoTo the target at start* (off by default) slews to the Visibility target
+     and waits for the slew to finish plus a few seconds before the first frame.
+     If the mount is offline, refuses the GoTo, or has not arrived within five
+     minutes, the sequence is **not** started and the Activity log says why.
+   - Preparing a transit sequence fills in the coverage start time. The mode is
+     still *Now* until you choose otherwise.
 
 ```{tip}
 Keep the acquisition settings stable through a time-series run. Changing
