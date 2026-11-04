@@ -43,6 +43,14 @@ from argos.ui.pages.configuration_page import _ASTAP_DATABASES, _DOWNSAMPLE
 #: Selectable initial tab (also the config-namespace each tab writes into).
 SECTION_ASTROMETRY = "astrometry"
 SECTION_CATALOG = "catalog"
+SECTION_RECENTER = "recenter"
+
+#: Re-centering modes: (label, config value).
+_RECENTER_MODES = (
+    ("Off", "off"),
+    ("When the target drifts past a threshold", "threshold"),
+    ("Every N frames", "every_n"),
+)
 
 
 class AstrometrySettingsDialog(QDialog):
@@ -72,6 +80,7 @@ class AstrometrySettingsDialog(QDialog):
         self._tabs = QTabWidget()
         self._tabs.addTab(self._build_astrometry_tab(), "Plate solving")
         self._tabs.addTab(self._build_catalog_tab(), "Field catalogue")
+        self._tabs.addTab(self._build_recenter_tab(), "Re-centering")
         layout.addWidget(self._tabs)
 
         buttons = QDialogButtonBox(
@@ -82,8 +91,8 @@ class AstrometrySettingsDialog(QDialog):
         layout.addWidget(buttons)
 
         self._load()
-        # Open on the tab the caller asked for (Catalog is index 1).
-        self._tabs.setCurrentIndex(1 if section == SECTION_CATALOG else 0)
+        # Open on the tab the caller asked for.
+        self._tabs.setCurrentIndex({SECTION_CATALOG: 1, SECTION_RECENTER: 2}.get(section, 0))
 
     # ------------------------------------------------------------------
 
@@ -267,6 +276,70 @@ class AstrometrySettingsDialog(QDialog):
         form.addRow("Automatic reference stars", self._autocomp_spin)
         return tab
 
+    def _build_recenter_tab(self) -> QWidget:
+        tab = QWidget()
+        form = QFormLayout(tab)
+
+        help_label = QLabel(
+            "During a sequence with a photometry target, nudge the mount back between "
+            "exposures when the target drifts (unguided EQ tracking). Never moves during "
+            "an exposure. The first correction calibrates each mount axis with a short "
+            "pulse. Needs aperture tracking; off by default."
+        )
+        help_label.setWordWrap(True)
+        form.addRow(help_label)
+
+        self._recenter_mode = QComboBox()
+        for label, value in _RECENTER_MODES:
+            self._recenter_mode.addItem(label, value)
+        self._recenter_mode.currentIndexChanged.connect(self._sync_recenter_enabled)
+        form.addRow("Re-center", self._recenter_mode)
+
+        self._recenter_threshold = QDoubleSpinBox()
+        self._recenter_threshold.setRange(2.0, 500.0)
+        self._recenter_threshold.setDecimals(0)
+        self._recenter_threshold.setSuffix(" px")
+        self._recenter_threshold.setToolTip(
+            "Correct once the target is this far (green-plane pixels) from where it "
+            "was on the first measured frame"
+        )
+        form.addRow("Drift threshold", self._recenter_threshold)
+
+        self._recenter_every = QSpinBox()
+        self._recenter_every.setRange(1, 999)
+        self._recenter_every.setSuffix(" frames")
+        form.addRow("Correct every", self._recenter_every)
+
+        self._recenter_deadband = QDoubleSpinBox()
+        self._recenter_deadband.setRange(0.0, 50.0)
+        self._recenter_deadband.setDecimals(1)
+        self._recenter_deadband.setSuffix(" px")
+        self._recenter_deadband.setToolTip("Every-N mode: skip a correction smaller than this")
+        form.addRow("Ignore drift below", self._recenter_deadband)
+
+        self._recenter_max_step = QDoubleSpinBox()
+        self._recenter_max_step.setRange(1.0, 500.0)
+        self._recenter_max_step.setDecimals(0)
+        self._recenter_max_step.setSuffix(" px")
+        self._recenter_max_step.setToolTip("Largest correction applied in one move")
+        form.addRow("Largest single correction", self._recenter_max_step)
+
+        self._recenter_settle = QDoubleSpinBox()
+        self._recenter_settle.setRange(0.0, 60.0)
+        self._recenter_settle.setDecimals(1)
+        self._recenter_settle.setSuffix(" s")
+        self._recenter_settle.setToolTip("Wait after a move before the next exposure starts")
+        form.addRow("Settle time", self._recenter_settle)
+        return tab
+
+    def _sync_recenter_enabled(self, _index: int = 0) -> None:
+        mode = self._recenter_mode.currentData()
+        self._recenter_threshold.setEnabled(mode == "threshold")
+        self._recenter_every.setEnabled(mode == "every_n")
+        self._recenter_deadband.setEnabled(mode == "every_n")
+        for w in (self._recenter_max_step, self._recenter_settle):
+            w.setEnabled(mode != "off")
+
     # ------------------------------------------------------------------
 
     def _g(self, key: str, default):
@@ -313,6 +386,14 @@ class AstrometrySettingsDialog(QDialog):
         )
         self._select_field_depth()
         self._autocomp_spin.setValue(int(self._g("photometry.auto_comparisons", 5)))
+        mode_index = self._recenter_mode.findData(str(self._g("recenter.mode", "off")))
+        self._recenter_mode.setCurrentIndex(max(0, mode_index))
+        self._recenter_threshold.setValue(float(self._g("recenter.threshold_px", 20.0)))
+        self._recenter_every.setValue(int(self._g("recenter.every_n", 30)))
+        self._recenter_deadband.setValue(float(self._g("recenter.deadband_px", 2.0)))
+        self._recenter_max_step.setValue(float(self._g("recenter.max_step_px", 60.0)))
+        self._recenter_settle.setValue(float(self._g("recenter.settle_s", 3.0)))
+        self._sync_recenter_enabled()
 
     def _select_downsample(self, value: int) -> None:
         for i, (_label, v) in enumerate(_DOWNSAMPLE):
@@ -391,6 +472,12 @@ class AstrometrySettingsDialog(QDialog):
                 "catalog.exoplanet_hosts_allow_network", self._exoplanet_network_chk.isChecked()
             )
             self._config.set("photometry.auto_comparisons", int(self._autocomp_spin.value()))
+            self._config.set("recenter.mode", self._recenter_mode.currentData())
+            self._config.set("recenter.threshold_px", float(self._recenter_threshold.value()))
+            self._config.set("recenter.every_n", int(self._recenter_every.value()))
+            self._config.set("recenter.deadband_px", float(self._recenter_deadband.value()))
+            self._config.set("recenter.max_step_px", float(self._recenter_max_step.value()))
+            self._config.set("recenter.settle_s", float(self._recenter_settle.value()))
             self._config.save()
         self.saved.emit()
         self.accept()

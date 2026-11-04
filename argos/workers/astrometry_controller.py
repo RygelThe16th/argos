@@ -60,6 +60,11 @@ class AstrometryController(QObject):
         self._last_solve_monotonic = 0.0
         self._last_solve_radec: RaDec | None = None  # mount pointing at the last attempt
         self._pending_target: RaDec | None = None  # target for the in-flight solve's overlay
+        # Argos itself nudged the mount (re-centering/dither): rebase the
+        # movement check on the next reported position, and drop a solve of a
+        # pre-move frame that is still in flight.
+        self._rebase_mount = False
+        self._discard_inflight = False
 
     # ------------------------------------------------------------------
     # State
@@ -153,6 +158,19 @@ class AstrometryController(QObject):
                 return True
         return False
 
+    def note_internal_move(self) -> None:
+        """Argos moved the mount by a known, measured amount between frames.
+
+        The live tracker follows such a move, so the WCS stays usable — but
+        the mount's reported pointing changed, which would otherwise read as
+        an external slew and clear it. The next reported position becomes the
+        new baseline, and an in-flight solve (of a pre-move frame) is dropped.
+        """
+        self._rebase_mount = True
+        if self.is_busy():
+            self._discard_inflight = True
+        self._last_solve_monotonic = 0.0  # re-solve the first post-move frame
+
     def mount_moved_since_solution(self, mount_radec: RaDec | None) -> bool:
         """Whether the reported mount position makes the current WCS unsafe.
 
@@ -162,6 +180,10 @@ class AstrometryController(QObject):
         overlay: a target aperture can be drawn on empty sky.  Reuse the same
         movement threshold that arms an automatic re-solve.
         """
+        if self._rebase_mount and mount_radec is not None:
+            self._rebase_mount = False
+            self._last_solve_radec = mount_radec
+            return False
         if self._wcs is None or mount_radec is None or self._last_solve_radec is None:
             return False
         sep_arcmin = (
@@ -209,6 +231,10 @@ class AstrometryController(QObject):
 
     def _on_worker_solved(self, result) -> None:
         self.state.emit("Idle")
+        if self._discard_inflight:
+            self._discard_inflight = False
+            logger.info("Discarding a solve of a frame taken before the mount moved")
+            return
         if not result.solved:
             # Keep the previous WCS — a single miss must not blank the grid.
             self.failed.emit(result.message)

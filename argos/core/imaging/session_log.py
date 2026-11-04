@@ -42,6 +42,9 @@ class FrameRecord:
     sky_adu: float | None = None
     peak_adu: int | None = None
     eccentricity: float | None = None
+    #: Set on the first frame after a between-frames re-centering move
+    #: ("calibrate" | "recenter"), so the shifted frame can be found later.
+    mount_move: str | None = None
 
 
 @dataclass
