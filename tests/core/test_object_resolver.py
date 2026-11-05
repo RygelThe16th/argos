@@ -199,3 +199,111 @@ def test_nearby_lookup_parses_simbad_tap_and_caches(tmp_path: Path, monkeypatch)
     assert request["params"]["format"] == "csv"
     assert "CONTAINS" in request["params"]["query"]
     assert resolve_object("hd189733", cache_path=cache).name == "HD 189733"
+
+
+_BET_PER_VSX = {
+    "VSXObject": {
+        "Name": "bet Per",
+        "RA2000": "47.04221",
+        "Declination2000": "40.95567",
+        "VariabilityType": "EA/SD",
+        "Category": "Variable",
+    }
+}
+
+_UNKNOWN_SESAME_XML = (
+    "<?xml version='1.0'?><Sesame><Target><INFO>*** Nothing found</INFO></Target></Sesame>"
+)
+
+
+class _JsonResponse:
+    def __init__(self, payload) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        pass
+
+    def json(self):
+        return self._payload
+
+
+class _TextResponse:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def raise_for_status(self) -> None:
+        pass
+
+
+def _fake_network(monkeypatch, *, sesame, vsx):
+    """Route requests.get: ``sesame``/``vsx`` are a response or an exception."""
+    calls: list[str] = []
+
+    def fake_get(url, *_args, **_kwargs):
+        which = "vsx" if url == object_resolver._VSX_URL else "sesame"
+        calls.append(which)
+        outcome = vsx if which == "vsx" else sesame
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(object_resolver.requests, "get", fake_get)
+    return calls
+
+
+def test_cds_outage_falls_back_to_vsx_and_caches(tmp_path: Path, monkeypatch) -> None:
+    calls = _fake_network(
+        monkeypatch,
+        sesame=object_resolver.requests.ReadTimeout("CDS down"),
+        vsx=_JsonResponse(_BET_PER_VSX),
+    )
+    cache = tmp_path / "resolver.json"
+
+    result = resolve_object("Bet Per", cache_path=cache)
+
+    assert result.name == "bet Per"
+    assert result.ra_degrees == pytest.approx(47.04221)
+    assert result.dec_degrees == pytest.approx(40.95567)
+    assert result.source == "AAVSO VSX"
+    assert is_variable_object_type(result.object_type)
+    assert calls == ["sesame", "vsx"]
+    # Cached: a second lookup needs neither service.
+    assert resolve_object("bet  Per", cache_path=cache) == result
+    assert calls == ["sesame", "vsx"]
+
+
+def test_name_unknown_to_sesame_is_tried_in_vsx(tmp_path: Path, monkeypatch) -> None:
+    _fake_network(
+        monkeypatch,
+        sesame=_TextResponse(_UNKNOWN_SESAME_XML),
+        vsx=_JsonResponse(_BET_PER_VSX),
+    )
+    assert resolve_object("bet Per", cache_path=tmp_path / "r.json").source == "AAVSO VSX"
+
+
+def test_both_unreachable_reports_catalogue_unavailable(tmp_path: Path, monkeypatch) -> None:
+    timeout = object_resolver.requests.ConnectTimeout("down")
+    _fake_network(monkeypatch, sesame=timeout, vsx=timeout)
+    with pytest.raises(ObjectResolutionError, match="Catalogue unavailable"):
+        resolve_object("bet Per", cache_path=tmp_path / "r.json")
+
+
+def test_unknown_everywhere_keeps_sesame_not_found_message(tmp_path: Path, monkeypatch) -> None:
+    _fake_network(
+        monkeypatch,
+        sesame=_TextResponse(_UNKNOWN_SESAME_XML),
+        vsx=_JsonResponse({"VSXObject": []}),
+    )
+    with pytest.raises(ObjectResolutionError, match="No ICRS coordinates"):
+        resolve_object("zzqq Foo", cache_path=tmp_path / "r.json")
+
+
+def test_vsx_suspected_variable_is_not_a_photometry_target(tmp_path: Path, monkeypatch) -> None:
+    suspected = {"VSXObject": dict(_BET_PER_VSX["VSXObject"], Category="Suspected")}
+    _fake_network(
+        monkeypatch,
+        sesame=object_resolver.requests.ConnectionError("down"),
+        vsx=_JsonResponse(suspected),
+    )
+    result = resolve_object("bet Per", cache_path=tmp_path / "r.json")
+    assert not is_variable_object_type(result.object_type)

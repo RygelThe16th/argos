@@ -2,7 +2,9 @@
 
 Argos first searches its embedded Messier/NGC/IC catalogue, then the local
 CDS cache, and finally CDS Sesame for broader designations such as HD/HIP or
-free-text names. Successful online lookups are cached locally, so a target
+free-text names.  When Sesame is unreachable or does not know a name, AAVSO
+VSX is tried as well, so variable-star targets still resolve during a CDS
+outage. Successful online lookups are cached locally, so a target
 used during preparation remains available at the telescope without a network
 connection.
 
@@ -32,6 +34,7 @@ from argos.core.catalog.offline import (
 
 _SESAME_URL = "https://cds.unistra.fr/cgi-bin/nph-sesame/-oxp/SNV?"
 _SIMBAD_TAP_URL = "https://simbad.cds.unistra.fr/simbad/sim-tap/sync"
+_VSX_URL = "https://vsx.aavso.org/index.php"
 _CACHE_PATH = Path.home() / "Argos" / "cache" / "object_resolver.json"
 
 
@@ -366,6 +369,39 @@ def _from_xml(text: str, query: str) -> ResolvedObject:
     )
 
 
+def _resolve_from_vsx(query: str, timeout_s: float) -> ResolvedObject | None:
+    """Look ``query`` up in AAVSO VSX; ``None`` when unknown or unreachable."""
+    try:
+        response = requests.get(
+            _VSX_URL,
+            params={"view": "api.object", "ident": query, "format": "json"},
+            timeout=timeout_s,
+        )
+        response.raise_for_status()
+        obj = response.json().get("VSXObject")
+    except (requests.RequestException, ValueError, AttributeError):
+        return None
+    if not isinstance(obj, dict):
+        return None  # VSX answers ``{"VSXObject": []}`` for an unknown name
+    try:
+        ra = float(obj["RA2000"])
+        dec = float(obj["Declination2000"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (0.0 <= ra < 360.0 and -90.0 <= dec <= 90.0):
+        return None
+    # VSX has no SIMBAD-style type codes.  "V*" keeps confirmed variables on
+    # the photometry-target path; a suspected one is only a pointing target.
+    category = str(obj.get("Category", "")).strip().casefold()
+    return ResolvedObject(
+        name=display_designation(str(obj.get("Name", "")), fallback=query),
+        ra_degrees=ra,
+        dec_degrees=dec,
+        object_type="V*" if category == "variable" else "",
+        source="AAVSO VSX",
+    )
+
+
 def resolve_object(
     query: str,
     *,
@@ -412,12 +448,19 @@ def resolve_object(
     try:
         response = requests.get(f"{_SESAME_URL}{quote(query)}", timeout=timeout_s)
         response.raise_for_status()
-    except requests.RequestException as exc:
-        raise ObjectResolutionError(
-            "Catalogue unavailable. Connect to the internet or use a previously searched target."
-        ) from exc
+        result = _from_xml(response.text, query)
+    except (requests.RequestException, ObjectResolutionError) as exc:
+        # CDS is down, or does not know the name.  AAVSO VSX covers the
+        # variable stars Argos does photometry on, so try it before failing.
+        result = _resolve_from_vsx(query, timeout_s)
+        if result is None:
+            if isinstance(exc, ObjectResolutionError):
+                raise
+            raise ObjectResolutionError(
+                "Catalogue unavailable. Connect to the internet or use a previously "
+                "searched target."
+            ) from exc
 
-    result = _from_xml(response.text, query)
     cache = _read_cache(cache_path)
     cache[key] = asdict(result)
     _write_cache(cache_path, cache)
