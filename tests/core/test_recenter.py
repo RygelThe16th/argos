@@ -65,6 +65,39 @@ def test_frame_shift_flags_unrelated_frames():
     assert not frame_shift(a, b).reliable
 
 
+def _fixed_pattern(shape=(240, 320), seed=11) -> np.ndarray:
+    """Sensor pattern shared by every uncalibrated frame: hot pixels + banding."""
+    rng = np.random.default_rng(seed)
+    pattern = np.zeros(shape)
+    ys, xs = rng.integers(0, shape[0], 400), rng.integers(0, shape[1], 400)
+    pattern[ys, xs] = rng.uniform(300, 3000, 400)
+    pattern += rng.normal(0, 4, shape[1])[None, :]  # column banding
+    return pattern
+
+
+def _faint_field(shift=(0.0, 0.0)) -> np.ndarray:
+    # Thin cloud: few, faint stars, so the fixed pattern carries most power.
+    return 100.0 + (_star_field(shift=shift, n=15, seed=5) - 100.0) * 0.15
+
+
+def test_frame_shift_is_not_captured_by_the_sensor_pattern():
+    pattern = _fixed_pattern()
+    s = frame_shift(_faint_field() + pattern, _faint_field(shift=(6.0, -9.0)) + pattern)
+    # Either the true shift, or an honest "can't tell" — never a confident 0.
+    if s.reliable:
+        assert s.dx == pytest.approx(6.0, abs=0.5)
+        assert s.dy == pytest.approx(-9.0, abs=0.5)
+    assert not (s.reliable and abs(s.dx) <= 1 and abs(s.dy) <= 1)
+
+
+def test_pattern_only_frames_are_not_a_reliable_zero_shift():
+    rng = np.random.default_rng(1)
+    pattern = _fixed_pattern()
+    a = 100.0 + pattern + rng.normal(0, 3, pattern.shape)
+    b = 100.0 + pattern + rng.normal(0, 3, pattern.shape)
+    assert not frame_shift(a, b).reliable
+
+
 def test_settings_from_config_defaults_off_and_rejects_unknown_mode():
     assert not RecenterSettings.from_config(lambda k, d=None: d).enabled
     cfg = {"recenter.mode": "sometimes"}

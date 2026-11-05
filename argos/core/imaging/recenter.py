@@ -43,6 +43,13 @@ MIN_SHIFT_SIGNIFICANCE = 8.0
 #: The correlation peak must stand this far above the next-best candidate —
 #: two unrelated fields still line up a pair of stars somewhere by chance.
 MIN_SHIFT_PEAK_RATIO = 2.0
+#: A peak within a pixel of zero shift needs this ratio instead.  The sensor's
+#: fixed pattern (hot pixels, banding) is identical in every uncalibrated frame
+#: and so always correlates at zero; under thin cloud it can outvote the stars.
+MIN_ZERO_SHIFT_PEAK_RATIO = 4.0
+#: Gaussian low-pass (σ, green px) applied in the correlation: keeps star-sized
+#: structure and drops the pixel-scale pattern that whitening would amplify.
+SHIFT_LOWPASS_SIGMA_PX = 1.5
 #: A calibrated axis must move at least this many green px per second.
 MIN_AXIS_RESPONSE_PX_S = 1.0
 #: The two calibrated axes must be at least this far from parallel (degrees).
@@ -114,13 +121,29 @@ class FrameShift:
 
     @property
     def reliable(self) -> bool:
-        return (
-            self.significance >= MIN_SHIFT_SIGNIFICANCE and self.peak_ratio >= MIN_SHIFT_PEAK_RATIO
-        )
+        near_zero = abs(self.dx) <= 1.0 and abs(self.dy) <= 1.0
+        ratio = MIN_ZERO_SHIFT_PEAK_RATIO if near_zero else MIN_SHIFT_PEAK_RATIO
+        return self.significance >= MIN_SHIFT_SIGNIFICANCE and self.peak_ratio >= ratio
+
+
+def _suppress_sensor_pattern(a: np.ndarray) -> np.ndarray:
+    """Remove the parts of the sensor's fixed pattern that stars never look like.
+
+    Uncalibrated frames share hot pixels and row/column banding at the same
+    place, which phase correlation reads as "no shift".  A star spans several
+    pixels, so clamping each pixel to its brightest 4-neighbour flattens lone
+    hot pixels while leaving stars intact; subtracting row and column medians
+    removes banding.
+    """
+    p = np.pad(a, 1, mode="edge")
+    brightest_neighbour = np.maximum.reduce([p[:-2, 1:-1], p[2:, 1:-1], p[1:-1, :-2], p[1:-1, 2:]])
+    a = np.minimum(a, brightest_neighbour)
+    a = a - np.median(a, axis=1, keepdims=True)
+    return a - np.median(a, axis=0, keepdims=True)
 
 
 def _prepare(plane: np.ndarray) -> np.ndarray:
-    a = np.asarray(plane, dtype=np.float32)
+    a = _suppress_sensor_pattern(np.asarray(plane, dtype=np.float32))
     a = a - np.median(a)
     hi = float(np.percentile(a, 99.9))
     a = np.clip(a, 0.0, hi if hi > 0 else None)
@@ -140,7 +163,10 @@ def frame_shift(a: np.ndarray, b: np.ndarray) -> FrameShift:
         return FrameShift(0.0, 0.0, 0.0)
     fa, fb = np.fft.rfft2(_prepare(a)), np.fft.rfft2(_prepare(b))
     cross = fb * np.conj(fa)
-    surface = np.fft.irfft2(cross / (np.abs(cross) + 1e-9), s=a.shape)
+    fy = np.fft.fftfreq(a.shape[0])[:, None]
+    fx = np.fft.rfftfreq(a.shape[1])[None, :]
+    lowpass = np.exp(-2.0 * (np.pi * SHIFT_LOWPASS_SIGMA_PX) ** 2 * (fx**2 + fy**2))
+    surface = np.fft.irfft2(cross / (np.abs(cross) + 1e-9) * lowpass, s=a.shape)
     iy, ix = np.unravel_index(int(np.argmax(surface)), surface.shape)
     h, w = surface.shape
     peak = float(surface[iy, ix])
