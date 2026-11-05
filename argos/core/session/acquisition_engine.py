@@ -1101,8 +1101,13 @@ class AcquisitionEngine(QObject):
         wanted = max(0, int(self._cfg("photometry.auto_comparisons", 5)) - len(calibrated))
         if wanted <= 0:
             return 0
-        target_inst_mag, quality = self._pilot_comparison_quality(target)
+        target_inst_mag, target_snr, quality = self._pilot_comparison_quality(target)
         min_snr = float(self._cfg("photometry.comparison_min_snr", 10.0))
+        snr_fraction = float(self._cfg("photometry.comparison_min_snr_target_fraction", 0.8))
+        if target_snr is not None and target_snr > 0:
+            # Demanding references far better measured than a faint target
+            # leaves only much brighter — and usually remote — stars.
+            min_snr = min(min_snr, snr_fraction * target_snr)
         max_delta = float(self._cfg("photometry.comparison_max_delta_mag", 1.5))
         max_separation = float(self._cfg("photometry.comparison_max_separation_arcmin", 25.0))
         min_separation_px, edge_margin_px = self.reference_placement_limits()
@@ -1116,6 +1121,10 @@ class AcquisitionEngine(QObject):
             candidate_quality=quality,
             target_inst_mag=target_inst_mag,
             min_snr=min_snr,
+            distance_weight=float(self._cfg("photometry.comparison_distance_weight", 0.25)),
+            distance_scale_arcmin=float(
+                self._cfg("photometry.comparison_distance_scale_arcmin", 30.0)
+            ),
             max_delta_inst_mag=max_delta,
             max_separation_arcmin=max_separation,
             min_separation_px=min_separation_px,
@@ -1166,7 +1175,7 @@ class AcquisitionEngine(QObject):
             self.log_message.emit(
                 "WARN",
                 f"Photometry: only {len(picks)} of {wanted} requested comparisons pass "
-                f"the pilot quality gate (SNR ≥ {min_snr:g}, Δmag ≤ {max_delta:g}, "
+                f"the pilot quality gate (SNR ≥ {min_snr:.3g}, Δmag ≤ {max_delta:g}, "
                 f"distance ≤ {max_separation:g}′).",
             )
         return len(picks)
@@ -1252,7 +1261,7 @@ class AcquisitionEngine(QObject):
 
     def _pilot_comparison_quality(
         self, target: TargetStar
-    ) -> tuple[float | None, dict[str, ComparisonQuality] | None]:
+    ) -> tuple[float | None, float | None, dict[str, ComparisonQuality] | None]:
         """Measure target and VSP candidates on the solved pilot frame.
 
         The catalogue sees the whole sky but cannot know which calibrated star
@@ -1261,7 +1270,7 @@ class AcquisitionEngine(QObject):
         """
         wcs = self._astrometry.wcs
         if wcs is None or self._last_raw is None or self._last_raw_decimated:
-            return None, None
+            return None, None, None
         green = green_plane(self._last_raw)
         params = PhotometryParams.from_config(self._cfg, egain=self._egain())
         fwhm = self._phot_fwhm or self._last_fwhm or DEFAULT_FWHM
@@ -1299,7 +1308,7 @@ class AcquisitionEngine(QObject):
 
         target_phot = measure(target.ra_deg, target.dec_deg)
         if target_phot is None or target_phot.inst_mag is None:
-            return None, None
+            return None, None, None
         quality: dict[str, ComparisonQuality] = {}
         for star in self._comparisons:
             phot = measure(star.ra_deg, star.dec_deg)
@@ -1310,7 +1319,7 @@ class AcquisitionEngine(QObject):
                     saturated=phot.saturated,
                     suspect=phot.suspect,
                 )
-        return target_phot.inst_mag, quality
+        return target_phot.inst_mag, target_phot.snr, quality
 
     def photometry_geometry(self) -> tuple[float, float, float]:
         """Return the active aperture and sky-annulus radii in green pixels.

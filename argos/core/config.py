@@ -148,6 +148,14 @@ _DEFAULTS: dict[str, Any] = {
         # stars close to the target can have unusable differential errors.
         "comparison_min_snr": 10.0,
         "comparison_max_delta_mag": 1.5,
+        # A comparison as well measured as the target is good enough: the SNR
+        # gate drops to this fraction of the target's own pilot SNR when that
+        # is below comparison_min_snr (faint targets, small apertures).
+        "comparison_min_snr_target_fraction": 0.8,
+        # Proximity's share of the ranking score, and the separation at which
+        # it reaches zero. Close references share the target's thin cloud.
+        "comparison_distance_weight": 0.25,
+        "comparison_distance_scale_arcmin": 30.0,
         # References across a very wide raw field are vulnerable to flat-field
         # residuals and differential tracking error. A smaller, validated
         # ensemble is preferable to filling a requested count with remote stars.

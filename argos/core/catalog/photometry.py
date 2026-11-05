@@ -196,6 +196,8 @@ def select_comparison_stars(
     candidate_quality: Mapping[str, ComparisonQuality] | None = None,
     target_inst_mag: float | None = None,
     min_snr: float = 0.0,
+    distance_weight: float = 0.10,
+    distance_scale_arcmin: float = 120.0,
     max_delta_inst_mag: float | None = None,
     max_separation_arcmin: float | None = None,
     min_separation_px: float | None = None,
@@ -220,10 +222,15 @@ def select_comparison_stars(
     * ``edge_margin_px`` — a candidate this close to a frame edge leaves the
       field as soon as the mount drifts.
 
+    Ranking weighs pilot SNR and brightness match against proximity;
+    ``distance_weight`` is proximity's share of the score, falling to zero at
+    ``distance_scale_arcmin``.
+
     ``occupied_radec`` lists ``(name, ra_deg, dec_deg)`` of comparisons that
     are already in the ensemble; a candidate within 1″ of one is the same star
     and is left to the caller's de-duplication.
     """
+    distance_weight = min(max(distance_weight, 0.0), 1.0)
     use_geometry = wcs is not None and green_shape is not None
     target_xy = _green_xy(wcs, target_ra_deg, target_dec_deg) if use_geometry else None
     excluded: list[ComparisonExclusion] = []
@@ -270,18 +277,24 @@ def select_comparison_stars(
                 delta_inst is None or delta_inst > max_delta_inst_mag
             ):
                 continue
-            # Quality and brightness similarity matter more than angular
-            # proximity. Distance is intentionally only a gentle preference:
-            # a wide Seestar field often contains a much better comparison
-            # than the nearest faint catalogue star.
+            # SNR and brightness match share what proximity leaves, 5:4. A
+            # nearby reference sees the same thin cloud and the same part of
+            # the flat as the target, so proximity is a real criterion too.
             snr_score = min(float(quality.snr) / max(20.0, min_snr * 2.0), 1.0)
             mag_score = (
                 max(0.0, 1.0 - delta_inst / max_delta_inst_mag)
                 if delta_inst is not None and max_delta_inst_mag
                 else 0.5
             )
-            distance_score = max(0.0, 1.0 - scored.separation_arcmin / 120.0)
-            score = 0.50 * snr_score + 0.40 * mag_score + 0.10 * distance_score
+            distance_score = max(
+                0.0, 1.0 - scored.separation_arcmin / max(distance_scale_arcmin, 1e-6)
+            )
+            rest = 1.0 - distance_weight
+            score = (
+                rest * (5.0 / 9.0) * snr_score
+                + rest * (4.0 / 9.0) * mag_score
+                + distance_weight * distance_score
+            )
         else:
             # Legacy/offline behaviour remains closest-first when no pilot
             # measurement is available.

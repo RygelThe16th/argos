@@ -463,7 +463,13 @@ five comparisons from the AAVSO VSP sequence. Each candidate is measured on a
 pilot frame and must pass every gate:
 
 - not saturated, and not flagged *suspect* by the PSF-support test of §3.5;
-- SNR $\ge 10$ on that pilot frame;
+- SNR $\ge 10$ on that pilot frame — or, when the target itself measures
+  worse than that, $\ge 0.8\times$ the target's own SNR
+  (`photometry.comparison_min_snr_target_fraction`). A fixed gate above a
+  faint target's SNR leaves only stars much brighter, and usually farther
+  away, than the target: on V1071 Per (target SNR 6.6) it rejected a
+  reference 9.8′ away and within 0.06 mag of the target, and kept three
+  stars 11–23′ away;
 - **instrumental** magnitude within 1.5 mag of the target's — measured on the
   same frame, not compared through catalogue magnitudes, so the gate is about
   landing in the same part of the detector's response;
@@ -493,16 +499,19 @@ Candidates that clear every gate are then **ranked**, and the ranking is not
 what the gates suggest:
 
 $$
-\text{score} = 0.50\,S_\text{SNR} + 0.40\,S_{\Delta m} + 0.10\,S_\text{dist}
+\text{score} = (1-w)\left(\tfrac{5}{9}\,S_\text{SNR} + \tfrac{4}{9}\,S_{\Delta m}\right) + w\,S_\text{dist}
 $$
 
 with $S_\text{SNR} = \min(\text{SNR}/\max(20, 2\,\text{SNR}_\text{min}), 1)$,
 $S_{\Delta m} = 1 - \Delta m_\text{inst}/\Delta m_\text{max}$ and
-$S_\text{dist} = 1 - \theta/120'$. Because that last term is normalised over
-120′ while the hard cut is at 25′, distance contributes at most 0.02 of the
-final score inside the allowed region — proximity is essentially not a
-criterion. Signal-to-noise and brightness match are. If a pilot measurement is
-unavailable the code falls back to nearest-first instead.
+$S_\text{dist} = \max(0, 1 - \theta/\theta_0)$, where $w$ =
+`photometry.comparison_distance_weight` (0.25) and $\theta_0$ =
+`photometry.comparison_distance_scale_arcmin` (30′). Proximity is a real
+criterion: under patchy thin cloud a nearby reference sees the same
+transparency as the target, a remote one does not. (Earlier versions used
+weights of 0.50/0.40/0.10 with $\theta_0 = 120'$, which made distance worth
+at most 0.02 inside the 25′ cut.) If a pilot measurement is unavailable the
+code falls back to nearest-first instead.
 
 A manually clicked star is never replaced by this proposal. It is kept, but
 because it has no AUID and no catalogue magnitude it cannot contribute a zero
@@ -836,7 +845,10 @@ JSON config. The defaults below are those of 0.4.2.
 | `photometry.min_comparisons` | `2` | below this, a measurement is annotated, not hidden — §4.3 |
 | `photometry.auto_comparisons` | `5` | how many comparisons the automatic proposal may add — §4.5 |
 | `photometry.comparison_min_snr` | `10.0` | pilot-frame SNR gate — §4.5 |
+| `photometry.comparison_min_snr_target_fraction` | `0.8` | the SNR gate drops to this fraction of the target's pilot SNR when that is lower — §4.5 |
 | `photometry.comparison_max_delta_mag` | `1.5` | instrumental-magnitude gate, in mag — §4.5 |
+| `photometry.comparison_distance_weight` | `0.25` | $w$, proximity's share of the ranking score — §4.5 |
+| `photometry.comparison_distance_scale_arcmin` | `30.0` | $\theta_0$, separation at which proximity scores zero — §4.5 |
 | `photometry.comparison_max_separation_arcmin` | `25.0` | how far a reference may sit from the target — §4.5 |
 | `photometry.comparison_edge_margin_px` | `100.0` | drift allowance beyond the annulus for automatic references near a frame edge, in green px — §4.5 |
 | `photometry.comparison_validation_min_points` | `10` | points needed before a comparison can be judged — §6 |

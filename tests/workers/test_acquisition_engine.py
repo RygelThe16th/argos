@@ -127,3 +127,53 @@ def test_manual_references_breaking_the_rules_are_kept_with_a_warning(qapp, tmp_
         TargetStar(role=ROLE_TARGET, ra_deg=33.05875, dec_deg=44.65944, name="GZ And")
     )
     assert any("000-BPM-472" in text for level, text in logs if level == "WARN")
+
+
+def test_snr_gate_follows_a_faint_target(qapp, tmp_path) -> None:
+    """V1071 Per, 2026-11-05: the target's own pilot SNR was 6.6.
+
+    A fixed SNR ≥ 10 gate kept only stars 1.2–1.5 mag brighter than the
+    target, 11–23′ away, and rejected 000-BPM-129 — 9.8′ away and within
+    0.06 mag of the target.  The gate now follows the target's SNR.
+    """
+    import math
+
+    from argos.core.catalog.aavso import Band, ComparisonStar
+    from argos.core.catalog.photometry import ComparisonQuality
+    from argos.core.catalog.targets import ROLE_COMPARISON, ROLE_TARGET, TargetStar
+
+    ra0, dec0 = 38.06088, 55.94019
+    cfg = Config(dict(_DEFAULTS, sessions_path=str(tmp_path)))
+    engine = AcquisitionEngine(cfg, DeviceSession(cfg))
+    engine._astrometry._wcs = _TangentWCS(ra0, dec0, scale_arcsec=7.35)
+    engine._green_shape = (1080, 1920)
+
+    def star(auid, arcmin, v, angle_deg):
+        # Spread around the target so no two references share an annulus.
+        a = math.radians(angle_deg)
+        ra = ra0 + arcmin * math.cos(a) / 60.0 / math.cos(math.radians(dec0))
+        dec = dec0 + arcmin * math.sin(a) / 60.0
+        return ComparisonStar(auid, ra, dec, str(int(v * 10)), (Band("V", v),))
+
+    # (separation ′, V, pilot SNR, Δ instrumental mag) as measured on frame 1.
+    measured = {
+        "000-BPM-129": (9.8, 10.689, 6.9, -0.06),
+        "000-BPM-128": (11.4, 9.529, 20.1, -1.24),
+        "000-BPM-131": (15.8, 11.587, 5.8, 0.15),
+        "000-BKY-169": (17.6, 9.512, 22.4, -1.37),
+        "000-BBF-113": (23.1, 9.598, 19.1, -1.17),
+    }
+    engine._comparisons = [
+        star(a, sep, v, 72 * i) for i, (a, (sep, v, _s, _d)) in enumerate(measured.items())
+    ]
+    target_inst = -8.372
+    quality = {
+        a: ComparisonQuality(snr=snr, inst_mag=target_inst + d)
+        for a, (_sep, _v, snr, d) in measured.items()
+    }
+    engine._pilot_comparison_quality = lambda target: (target_inst, 6.6, quality)
+
+    engine.set_target_role(TargetStar(role=ROLE_TARGET, ra_deg=ra0, dec_deg=dec0, name="V1071 Per"))
+    comps = [s.auid for s in engine.target_set().by_role(ROLE_COMPARISON)]
+    assert comps[0] == "000-BPM-129"
+    assert set(comps) == set(measured)
