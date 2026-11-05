@@ -42,11 +42,15 @@ class ScheduledStart(QObject):
         status(str):     observer-facing state line (refreshed every tick).
         active(bool):    True while waiting/slewing; False once started or ended.
         ended(str, str): outcome ("started" | "cancelled" | "failed"), message.
+        solve_for_run(bool): True just before a run that follows our GoTo (the
+                         slew cleared the solution, so the run must re-solve
+                         from scratch); False if that run was then refused.
     """
 
     status = pyqtSignal(str)
     active = pyqtSignal(bool)
     ended = pyqtSignal(str, str)
+    solve_for_run = pyqtSignal(bool)
 
     def __init__(
         self,
@@ -168,11 +172,16 @@ class ScheduledStart(QObject):
         self._timer.stop()
         self._phase = _IDLE
         self._plan = None
+        slewed = bool(self._cond is not None and self._cond.goto)
+        if slewed:
+            self.solve_for_run.emit(True)
         if self._engine.start_sequence(plan):
             self.active.emit(False)
             self.ended.emit("started", "Scheduled start: sequence started.")
             self._log("OK", "Scheduled start: sequence started.")
         else:
+            if slewed:
+                self.solve_for_run.emit(False)
             self.active.emit(False)
             self.ended.emit("failed", "Scheduled start: the sequence was refused (see the log).")
 

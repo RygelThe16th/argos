@@ -2535,15 +2535,38 @@ class ImagingPage(QWidget):
     # ------------------------------------------------------------------
 
     @pyqtSlot(bool)
+    def set_solve_for_next_run(self, enabled: bool) -> None:
+        """A scheduled start slewed to the target right before the run.
+
+        The GoTo cleared the previous solution, so the usual "arm auto-solve
+        when the field is already solved" rule would leave the run unsolved —
+        no catalogue, no live photometry, no re-centering. This arms it anyway
+        for the next run (the mount position is a good solve hint).
+        """
+        self._solve_for_next_run = bool(enabled)
+
+    @pyqtSlot(bool)
     def _on_sequence_running(self, running: bool) -> None:
         # Arm the periodic re-solve for the run (and restore the user's choice
         # after): it re-bases the WCS + live tracker so rigid-fit error never
         # accumulates, keeping markers and apertures on the stars all night.
         if running:
             self._auto_solve_before_seq = self._astrometry.auto
-            if self._astrometry.wcs is not None and not self._astrometry.auto:
+            after_goto = getattr(self, "_solve_for_next_run", False)
+            self._solve_for_next_run = False
+            if (self._astrometry.wcs is not None or after_goto) and not self._astrometry.auto:
                 self.auto_solve_armed.emit(True)  # menu action → set_auto via toggled
-                self.log_message.emit("INFO", "Sequence: auto-solve armed for the run.")
+                self.log_message.emit(
+                    "INFO",
+                    (
+                        (
+                            "Sequence: auto-solve armed — the GoTo before the run cleared the "
+                            "previous solution; the first frames are solved from the mount position."
+                        )
+                        if after_goto and self._astrometry.wcs is None
+                        else "Sequence: auto-solve armed for the run."
+                    ),
+                )
         elif not getattr(self, "_auto_solve_before_seq", True):
             self.auto_solve_armed.emit(False)
         if not running:

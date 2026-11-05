@@ -171,6 +171,7 @@ class Shell(QMainWindow):
         plan.object_name_changed.connect(self._on_sequence_object_changed)
         self._acquisition.target_coordinates_changed.connect(self._sequencer.set_target_coordinates)
         self._sequencer.target_resolved.connect(self._acquisition.set_catalogue_target)
+        self._sequencer.solve_for_run_requested.connect(self._acquisition.set_solve_for_next_run)
         self._sequencer.science_source_resolved.connect(self._acquisition.set_science_source)
 
     def _on_sequence_object_changed(self, object_name: str) -> None:

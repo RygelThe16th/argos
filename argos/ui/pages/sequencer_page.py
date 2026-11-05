@@ -28,6 +28,9 @@ class SequencerPage(QWidget):
     """Full-page host for the sequence planner, wired to the engine."""
 
     target_resolved = pyqtSignal(object)
+    #: A scheduled GoTo start is about to run: the run must arm auto-solve even
+    #: though the slew left no solution (False withdraws a refused start).
+    solve_for_run_requested = pyqtSignal(bool)
     science_source_resolved = pyqtSignal(str, object)  # programme, host/target coordinates
 
     def __init__(self, config, session, engine, parent: QWidget | None = None) -> None:
@@ -65,6 +68,7 @@ class SequencerPage(QWidget):
         self._scheduler.active.connect(self.panel.set_waiting)
         self._scheduler.status.connect(self.panel.set_status)
         self._scheduler.ended.connect(self._on_schedule_ended)
+        self._scheduler.solve_for_run.connect(self.solve_for_run_requested)
         # Engine → run feedback.
         engine.sequence_running.connect(self.panel.set_running)
         engine.sequence_paused.connect(self.panel.set_paused)

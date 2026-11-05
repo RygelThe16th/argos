@@ -214,6 +214,9 @@ presets and run controls into movable panels; the step table stays in the centre
      and waits for the slew to finish plus a few seconds before the first frame.
      If the mount is offline, refuses the GoTo, or has not arrived within five
      minutes, the sequence is **not** started and the Activity log says why.
+     The GoTo clears the previous plate solution, so the run arms auto-solve
+     itself. The first frames are solved from the mount position, and the
+     catalogue, saved photometry roles and live photometry then follow.
    - Preparing a transit sequence fills in the coverage start time. The mode is
      still *Now* until you choose otherwise.
 
