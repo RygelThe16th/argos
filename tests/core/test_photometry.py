@@ -146,6 +146,30 @@ def test_auto_comparisons_use_pilot_quality_not_only_proximity() -> None:
     assert [star.auid for star in picks] == ["GOOD", "GOOD2"]
 
 
+def test_distance_weight_prefers_a_comparably_good_closer_star() -> None:
+    """Under thin cloud a nearby reference beats a slightly better remote one."""
+    near = _comp("NEAR", 0.08, 0.1, 10.6)  # ≈4.8′
+    remote = _comp("REMOTE", 0.38, 0.1, 10.4)  # ≈22.8′
+    quality = {
+        "NEAR": ComparisonQuality(snr=18.0, inst_mag=-9.0),
+        "REMOTE": ComparisonQuality(snr=22.0, inst_mag=-9.1),
+    }
+    kwargs = dict(
+        candidate_quality=quality,
+        target_inst_mag=-8.2,
+        min_snr=10.0,
+        max_delta_inst_mag=1.5,
+        count=5,
+    )
+    # Legacy weighting (10 % over 120′): proximity barely counts.
+    legacy = auto_comparison_stars(0.0, 0.1, [remote, near], **kwargs)
+    assert [p.auid for p in legacy] == ["REMOTE", "NEAR"]
+    closer = auto_comparison_stars(
+        0.0, 0.1, [remote, near], distance_weight=0.25, distance_scale_arcmin=30.0, **kwargs
+    )
+    assert [p.auid for p in closer] == ["NEAR", "REMOTE"]
+
+
 def test_auto_comparisons_reject_remote_stars_even_when_bright() -> None:
     close = _comp("CLOSE", 0.08, 0.1, 10.6)
     remote = _comp("REMOTE", 0.80, 0.1, 10.4)
