@@ -190,3 +190,43 @@ def test_status_counts_down():
     clock.advance(30)
     sched.tick()
     assert "1m 30s" in statuses[0] and "1m 00s" in statuses[-1]
+
+
+def test_goto_start_requests_solve_for_the_run():
+    sched, clock, engine, session, _, _ = _make()
+    requests = []
+    sched.solve_for_run.connect(requests.append)
+    engine_calls = []
+    original = engine.start_sequence
+
+    def start(plan):
+        engine_calls.append(list(requests))  # what was requested before the start
+        return original(plan)
+
+    engine.start_sequence = start
+    sched.arm("PLAN", sc.StartCondition(goto=True, target=_TARGET))
+    clock.advance(mod.SLEW_START_GRACE_S)
+    sched.tick()
+    clock.advance(mod.SLEW_SETTLE_S)
+    sched.tick()
+    assert engine_calls == [[True]] and requests == [True]
+
+
+def test_refused_goto_start_withdraws_solve_request():
+    sched, clock, engine, _, _, _ = _make(engine=_Engine(accept=False))
+    requests = []
+    sched.solve_for_run.connect(requests.append)
+    sched.arm("PLAN", sc.StartCondition(goto=True, target=_TARGET))
+    clock.advance(mod.SLEW_START_GRACE_S)
+    sched.tick()
+    clock.advance(mod.SLEW_SETTLE_S)
+    sched.tick()
+    assert requests == [True, False]
+
+
+def test_time_start_without_goto_requests_nothing():
+    sched, clock, _, _, _, _ = _make()
+    requests = []
+    sched.solve_for_run.connect(requests.append)
+    sched.arm("PLAN", sc.StartCondition(sc.START_AT_TIME, start_at=clock.wall))
+    assert requests == []
